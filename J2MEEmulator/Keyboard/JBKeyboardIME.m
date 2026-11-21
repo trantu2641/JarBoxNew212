@@ -37,8 +37,10 @@ static NSString *JBReplaceLastBase(NSString *s, NSString *base, NSString *replac
 
     for (NSArray *p in pairs) {
         if ([w hasSuffix:p[0]]) {
-            w = [w substringToIndex:w.length - p[0].length];
-            w = [w stringByAppendingString:p[1]];
+            NSString *pairKey = (NSString *)[p objectAtIndex:0];
+            NSString *pairValue = (NSString *)[p objectAtIndex:1];
+            w = [w substringToIndex:w.length - pairKey.length];
+            w = [w stringByAppendingString:pairValue];
             break;
         }
     }
@@ -78,7 +80,8 @@ static NSString *JBReplaceLastBase(NSString *s, NSString *base, NSString *replac
                         }
                     }
                     if (idx != NSNotFound && idx < toneTables.count) {
-                        NSString *rep = toneTables[idx][mr.location];
+                        NSArray *toneRow = (NSArray *)[toneTables objectAtIndex:idx];
+                        NSString *rep = (NSString *)[toneRow objectAtIndex:mr.location];
                         if ([[v uppercaseString] isEqualToString:v]) rep = [rep uppercaseString];
                         base = [base stringByReplacingCharactersInRange:NSMakeRange(i,1) withString:rep];
                     }
