@@ -1,6 +1,6 @@
 //
 // GameViewController.swift
-// J2ME portrait game screen with keyboard input,
+// J2ME portrait game screen with native iPhone keyboard input,
 // framebuffer viewport, multi-session tabs, and background audio keep-alive.
 //
 
@@ -143,8 +143,6 @@ final class GameViewController: UIViewController {
     private lazy var formView = FormView()
     private lazy var listView = J2MEListView()
     private lazy var textBoxOverlay = TextBoxOverlayView()
-    private let qwertyKeyboardView = J2MEQWERTYKeyboardView()
-    private var qwertyTextBuffer = ""
 
     private let headerStack = UIStackView()
     private let tabScrollView = UIScrollView()
@@ -1401,7 +1399,6 @@ final class GameViewController: UIViewController {
             action: #selector(toggleKeepScreenOnFromMenu)
         ))
         stack.addArrangedSubview(makeMoreMenuButton(title: "Cỡ màn hình", color: .systemBlue, action: #selector(showScreenSizeMenu)))
-        stack.addArrangedSubview(makeMoreMenuButton(title: "Giao diện bàn phím", color: .systemBlue, action: #selector(showKeyboardSkinMenu)))
         stack.addArrangedSubview(makeMoreMenuButton(title: "Proxy", color: .systemBlue, action: #selector(showProxyMenu)))
         stack.addArrangedSubview(makeMoreMenuButton(title: "Thoát", color: .systemRed, action: #selector(exitFromMoreMenu)))
         stack.addArrangedSubview(makeMoreMenuButton(title: "Hủy", color: .systemBlue, action: #selector(closeMoreMenu)))
@@ -1488,23 +1485,6 @@ final class GameViewController: UIViewController {
         UIApplication.shared.isIdleTimerDisabled = newValue
         UserDefaults.standard.set(newValue, forKey: "J2MEKeepScreenOn")
         closeMoreMenu()
-    }
-
-    @objc private func showKeyboardSkinMenu() {
-        closeMoreMenu()
-        let alert = UIAlertController(title: "Giao diện bàn phím", message: nil, preferredStyle: .actionSheet)
-        let current = UserDefaults.standard.string(forKey: "J2MEQWERTYTheme") ?? "dark"
-        for (title, value) in [("Tối", "dark"), ("Sáng", "light"), ("Xanh", "blue")] {
-            alert.addAction(UIAlertAction(title: title + (current == value ? " ✓" : ""), style: .default) { [weak self] _ in
-                self?.qwertyKeyboardView.setTheme(value)
-            })
-        }
-        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-        if let pop = alert.popoverPresentationController {
-            pop.sourceView = moreButton
-            pop.sourceRect = moreButton.bounds
-        }
-        present(alert, animated: true)
     }
 
     @objc private func showScreenSizeMenu() {
@@ -1680,13 +1660,6 @@ final class GameViewController: UIViewController {
         emulatorView.clipsToBounds = true
         view.addSubview(emulatorView)
 
-        qwertyKeyboardView.translatesAutoresizingMaskIntoConstraints = false
-        qwertyKeyboardView.isHidden = true
-        qwertyKeyboardView.onTextChanged = { [weak self] text in self?.qwertyTextBuffer = text }
-        qwertyKeyboardView.onDone = { [weak self] in self?.finishQWERTYInput(confirm: true) }
-        qwertyKeyboardView.onCancel = { [weak self] in self?.finishQWERTYInput(confirm: false) }
-        view.addSubview(qwertyKeyboardView)
-
         keypadView.translatesAutoresizingMaskIntoConstraints = false
         keypadView.onKeyEvent = { type, code in
             j2me_input_post_key(type, code)
@@ -1717,11 +1690,7 @@ final class GameViewController: UIViewController {
             keypadView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 2),
             keypadView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -2),
             keypadBottomConstraint,
-            keypadHeightConstraint,
-            qwertyKeyboardView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4),
-            qwertyKeyboardView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4),
-            qwertyKeyboardView.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -4),
-            qwertyKeyboardView.heightAnchor.constraint(equalToConstant: 285)
+            keypadHeightConstraint
         ])
     }
 
@@ -1776,28 +1745,14 @@ final class GameViewController: UIViewController {
     }
 
     func presentTextInputPopup(title: String = "Nhập văn bản", initialText: String = "", maxSize: Int = 256, constraints: Int = 0) {
-        _ = title; _ = maxSize; _ = constraints
         hideSystemKeyboard()
-        keyboardIsVisible = true
-        qwertyTextBuffer = initialText
-        qwertyKeyboardView.begin(initialText: initialText)
-        qwertyKeyboardView.isHidden = false
-        view.bringSubviewToFront(qwertyKeyboardView)
-        setKeypadVisible(false, duration: 0.12)
-    }
-
-    private func finishQWERTYInput(confirm: Bool) {
-        if confirm { sendTextStringToGame(qwertyTextBuffer) }
-        qwertyKeyboardView.isHidden = true
-        keyboardIsVisible = false
-        qwertyTextBuffer = ""
-        if isCanvasScreenVisible && !userRequestedExit {
-            setKeypadVisible(true, duration: 0.18)
-        }
+        textBoxOverlay.configure(title: title, initialText: initialText, maxSize: maxSize, constraints: constraints)
+        textBoxOverlay.isHidden = false
+        view.bringSubviewToFront(textBoxOverlay)
+        textBoxOverlay.focusInput()
     }
 
     // MARK: - iOS software keyboard
-
 
     private func buildKeyboardInput() {
         keyboardInput.translatesAutoresizingMaskIntoConstraints = false
@@ -1839,7 +1794,6 @@ final class GameViewController: UIViewController {
             keyboardInput.widthAnchor.constraint(equalToConstant: 2),
             keyboardInput.heightAnchor.constraint(equalToConstant: 2)
         ])
-
     }
 
     // MARK: - Keypad
@@ -1850,11 +1804,11 @@ final class GameViewController: UIViewController {
     }
 
     @objc private func toggleSystemKeyboard() {
-        if keyboardIsVisible || !qwertyKeyboardView.isHidden {
-            finishQWERTYInput(confirm: false)
-            return
+        if keyboardInput.isFirstResponder || keyboardIsVisible {
+            hideSystemKeyboard()
+        } else {
+            keyboardInput.becomeFirstResponder()
         }
-        presentTextInputPopup(title: "Nhập văn bản", initialText: "", maxSize: 256, constraints: 0)
     }
 
     private func hideSystemKeyboard() {
@@ -1963,7 +1917,7 @@ final class GameViewController: UIViewController {
         duration: TimeInterval = 0.18,
         animationOptions: UIView.AnimationOptions = [.beginFromCurrentState]
     ) {
-        let shouldShow = visible && !keyboardIsVisible && qwertyKeyboardView.isHidden && !userRequestedExit
+        let shouldShow = visible && !keyboardIsVisible && !userRequestedExit
         keypadView.isHidden = !shouldShow
         keypadHeightConstraint.isActive = shouldShow
         keypadCollapsedConstraint.isActive = !shouldShow
@@ -2004,7 +1958,6 @@ final class GameViewController: UIViewController {
         startupWatchdog = nil
 
         textBoxOverlay.isHidden = true
-        qwertyKeyboardView.isHidden = true
         keyboardInput.resignFirstResponder()
         keyboardIsVisible = false
         keypadBottomConstraint.constant = -7
@@ -2047,7 +2000,6 @@ final class GameViewController: UIViewController {
         formView.isHidden = false
         emulatorView.isHidden = true
         keypadView.isHidden = true
-        qwertyKeyboardView.isHidden = true
         keypadHeightConstraint.isActive = false
         keypadCollapsedConstraint.isActive = true
         listView.isHidden = true
@@ -2058,7 +2010,6 @@ final class GameViewController: UIViewController {
         listView.isHidden = false
         emulatorView.isHidden = true
         keypadView.isHidden = true
-        qwertyKeyboardView.isHidden = true
         keypadHeightConstraint.isActive = false
         keypadCollapsedConstraint.isActive = true
         formView.isHidden = true
