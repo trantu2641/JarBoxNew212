@@ -1,10 +1,11 @@
-name: Build JarBox2 iOS
+name: iOS Build - Slim IPA
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+      - feature/gboard-keyboard
 
 permissions:
   contents: read
@@ -12,527 +13,178 @@ permissions:
 jobs:
   build:
     runs-on: macos-26
-    timeout-minutes: 60
+
+    env:
+      SCHEME: J2MEEmulator
+      CONFIGURATION: Release
+      DEPLOYMENT_TARGET: "16.4"
 
     steps:
-
-      # ============================================================
-      # 1. Checkout
-      # ============================================================
-
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      # ============================================================
-      # 1.5 Restore large soundfont split into multiple Git files
-      #
-      # gs_instruments.sf2 is too large for a single GitHub upload.
-      # The repository contains:
-      #   gs_instruments.sf2.partaa
-      #   gs_instruments.sf2.partab
-      #
-      # Rebuild the original SF2 before Xcode starts.
-      # ============================================================
-
-      - name: Restore soundfont
+      - name: Select Xcode
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
+          XCODE_PATH="/Applications/Xcode_26.6.app"
 
-          SOUND_DIR="J2MEEmulator/Resources/sound_fonts"
-          PART_A="$SOUND_DIR/gs_instruments.sf2.partaa"
-          PART_B="$SOUND_DIR/gs_instruments.sf2.partab"
-          SOUND="$SOUND_DIR/gs_instruments.sf2"
-
-          echo ""
-          echo "========================================"
-          echo "Restoring GS soundfont"
-          echo "========================================"
-
-          if [ ! -s "$PART_A" ]; then
-            echo "ERROR: Missing $PART_A"
+          if [ -d "$XCODE_PATH" ]; then
+            sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          else
+            echo "Xcode 26.6 not found"
+            ls -d /Applications/Xcode*.app 2>/dev/null || true
             exit 1
           fi
-
-          if [ ! -s "$PART_B" ]; then
-            echo "ERROR: Missing $PART_B"
-            exit 1
-          fi
-
-          rm -f "$SOUND"
-
-          cat "$PART_A" "$PART_B" > "$SOUND"
-
-          if [ ! -s "$SOUND" ]; then
-            echo "ERROR: gs_instruments.sf2 was not restored."
-            exit 1
-          fi
-
-          echo ""
-          echo "Soundfont restored:"
-          ls -lh "$PART_A" "$PART_B" "$SOUND"
-
-          echo ""
-          echo "SHA256:"
-          shasum -a 256 "$SOUND"
-
-
-      # ============================================================
-      # 2. Toolchain
-      # ============================================================
-
-      - name: Show Xcode
-        run: |
-          set -e
 
           xcodebuild -version
-          xcodebuild -showsdks
+          xcrun --sdk iphoneos --show-sdk-version
 
-
-      # ============================================================
-      # 3. Java 17
-      # ============================================================
-
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-
-      # ============================================================
-      # 4. Verify MiniJVM runtime
-      #
-      # IMPORTANT:
-      # Do NOT rebuild or patch minijvm_rt.jar here.
-      #
-      # The current crash happens inside MiniJVM itself.
-      # ============================================================
-
-      - name: Verify bundled MiniJVM
+      - name: Locate project
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          RUNTIME="J2MEEmulator/Resources/jars/minijvm_rt.jar"
-
-          if [ ! -s "$RUNTIME" ]; then
-            echo ""
-            echo "ERROR: minijvm_rt.jar is missing."
-            echo ""
+          if [ -f "J2MEEmulator.xcodeproj/project.pbxproj" ]; then
+            echo "PROJECT_PATH=J2MEEmulator.xcodeproj" >> "$GITHUB_ENV"
+          elif [ -f "J2MEEmulator/J2MEEmulator.xcodeproj/project.pbxproj" ]; then
+            echo "PROJECT_PATH=J2MEEmulator/J2MEEmulator.xcodeproj" >> "$GITHUB_ENV"
+          else
+            echo "J2MEEmulator.xcodeproj not found"
+            find . -name "*.xcodeproj" -maxdepth 4 -print
             exit 1
           fi
 
-          echo ""
-          echo "========================================"
-          echo "MiniJVM runtime"
-          echo "========================================"
-
-          ls -lh "$RUNTIME"
-
-          echo ""
-          echo "Checking MiniJVM HTTP classes:"
-
-          jar tf "$RUNTIME" | grep \
-            -E 'org/mini/net/http/(Protocol|StreamConnectionPool|StreamConnectionElement)\.class'
-
-          echo ""
-          echo "MiniJVM runtime OK."
-
-
-      # ============================================================
-      # 5. Build j2me_api.jar
-      #
-      # Build from current source.
-      # Use the EXISTING minijvm_rt.jar.
-      # ============================================================
-
-      - name: Build J2ME API
+      - name: Clean build
+        shell: bash
         run: |
-          set -e
-
-          echo ""
-          echo "========================================"
-          echo "Building j2me_api.jar"
-          echo "========================================"
-
-          bash j2me_api/build.sh
-
-          API="J2MEEmulator/Resources/jars/j2me_api.jar"
-
-          if [ ! -s "$API" ]; then
-            echo ""
-            echo "ERROR: j2me_api.jar was not generated."
-            exit 1
-          fi
-
-          echo ""
-          echo "Built:"
-          ls -lh "$API"
-
-
-      # ============================================================
-      # 6. CRITICAL runtime verification
-      # ============================================================
-
-      - name: Verify MIDletRunner
-        run: |
-          set -e
-
-          API="J2MEEmulator/Resources/jars/j2me_api.jar"
-
-          echo ""
-          echo "========================================"
-          echo "Checking MIDletRunner"
-          echo "========================================"
-
-          if ! jar tf "$API" | grep -q \
-            '^javax/microedition/shell/MIDletRunner\.class$'
-          then
-
-            echo ""
-            echo "ERROR:"
-            echo "MIDletRunner.class is missing from j2me_api.jar"
-            echo ""
-
-            echo "Available shell classes:"
-            jar tf "$API" | grep \
-              '^javax/microedition/shell/' || true
-
-            exit 1
-          fi
-
-          echo ""
-          echo "OK:"
-          echo "javax/microedition/shell/MIDletRunner.class"
-
-          echo ""
-          echo "J2ME API class count:"
-          jar tf "$API" | wc -l
-
-
-      # ============================================================
-      # 7. Verify required J2ME classes
-      # ============================================================
-
-      - name: Verify J2ME classes
-        run: |
-          set -e
-
-          API="J2MEEmulator/Resources/jars/j2me_api.jar"
-
-          REQUIRED="
-          javax/microedition/midlet/MIDlet.class
-          javax/microedition/shell/MIDletRunner.class
-          javax/microedition/lcdui/Canvas.class
-          javax/microedition/lcdui/Display.class
-          javax/microedition/lcdui/Image.class
-          javax/microedition/io/Connector.class
-          javax/microedition/io/HttpConnection.class
-          "
-
-          for CLASS in $REQUIRED
-          do
-            if ! jar tf "$API" | grep -q "^$CLASS$"
-            then
-              echo ""
-              echo "ERROR: Missing class:"
-              echo "$CLASS"
-              exit 1
-            fi
-          done
-
-          echo ""
-          echo "All required J2ME classes exist."
-
-
-      # ============================================================
-      # 8. Verify source MIDletRunner
-      # ============================================================
-
-      - name: Verify MIDletRunner source
-        run: |
-          set -e
-
-          SRC="j2me_api/src/javax/microedition/shell/MIDletRunner.java"
-
-          if [ ! -f "$SRC" ]; then
-            echo "ERROR: MIDletRunner.java not found."
-            exit 1
-          fi
-
-          echo ""
-          echo "MIDletRunner source found:"
-          echo "$SRC"
-
-          grep -n \
-            "public static void main" \
-            "$SRC"
-
-          grep -n \
-            "Class.forName" \
-            "$SRC"
-
-
-      # ============================================================
-      # 9. Verify Xcode project
-      # ============================================================
-
-      - name: Verify Xcode project
-        run: |
-          set -e
-
-          if [ ! -d "J2MEEmulator.xcodeproj" ]; then
-            echo "ERROR: J2MEEmulator.xcodeproj not found."
-            exit 1
-          fi
-
+          set -euo pipefail
+          rm -rf build
           xcodebuild \
-            -list \
-            -project J2MEEmulator.xcodeproj
-
-
-      # ============================================================
-      # 10. Build iOS 16.4
-      # ============================================================
-
-      - name: Build iOS app
-        run: |
-          set -o pipefail
-
-          xcodebuild \
-            -project J2MEEmulator.xcodeproj \
-            -scheme J2MEEmulator \
-            -configuration Release \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
             -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            IPHONEOS_DEPLOYMENT_TARGET=16.4 \
-            SWIFT_VERSION=5.0 \
-            PRODUCT_BUNDLE_IDENTIFIER=com.trantu2641.jarbox2 \
+            clean
+
+      - name: Build archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          xcodebuild \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -sdk iphoneos \
+            -archivePath "$PWD/build/J2MEEmulator.xcarchive" \
+            IPHONEOS_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            VALID_ARCHS=arm64 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY='' \
-            build \
-            2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
+            COPY_PHASE_STRIP=YES \
+            STRIP_INSTALLED_PRODUCT=YES \
+            DEBUG_INFORMATION_FORMAT=dwarf \
+            DWARF_DSYM_FILE_SHOULD_ACCOMPANY_PRODUCT=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            archive
 
-
-      # ============================================================
-      # 11. Locate app
-      # ============================================================
-
-      - name: Locate built app
+      - name: Slim app payload
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo ""
-          echo "Searching for built app..."
+          APP_PATH="$(find "$PWD/build/J2MEEmulator.xcarchive/Products/Applications" \
+            -maxdepth 1 -name "*.app" -type d | head -n 1)"
 
-          find "$RUNNER_TEMP/DerivedData" \
-            -name "*.app" \
-            -type d \
-            -print
-
-          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/JarBox.app"
-
-          if [ ! -d "$APP" ]; then
-            echo ""
-            echo "ERROR: JarBox.app not found."
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app found in archive"
             exit 1
           fi
 
-          echo ""
-          echo "APP:"
-          echo "$APP"
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
-          ls -lh "$APP"
+          echo "=== Before slim ==="
+          du -sh "$APP_PATH"
+          find "$APP_PATH" -type f -print0 | xargs -0 du -h | sort -h | tail -30
 
+          # The old IPA contains the real SoundFont:
+          #   gs_instruments.sf2
+          # A broken packaging step can additionally leave:
+          #   gs_instruments.sf2.partaa
+          #   gs_instruments.sf2.partab
+          #
+          # Keep the normal .sf2 and remove ONLY split parts when the
+          # complete .sf2 already exists. This avoids deleting required
+          # data when a split file is genuinely the only copy.
+          while IFS= read -r -d '' SF2; do
+            base="${SF2%.*}"
+            if [ -f "$SF2" ]; then
+              for part in "${SF2}.partaa" "${SF2}.partab" "${SF2}.partac" "${SF2}.partad"; do
+                if [ -f "$part" ]; then
+                  echo "Removing duplicate split SoundFont: $part"
+                  rm -f "$part"
+                fi
+              done
+            fi
+          done < <(find "$APP_PATH" -type f -name "*.sf2" -print0)
 
-      # ============================================================
-      # 12. Replace bundled runtime files explicitly
-      #
-      # This guarantees the IPA contains exactly the verified
-      # runtime files from this checkout.
-      # ============================================================
+          # Remove common packaging-only metadata.
+          find "$APP_PATH" -type d -name "__MACOSX" -prune -exec rm -rf {} + 2>/dev/null || true
+          find "$APP_PATH" -type f \( \
+            -name ".DS_Store" -o \
+            -name "*.dSYM" \
+          \) -delete 2>/dev/null || true
 
-      - name: Install verified runtime into app
-        run: |
-          set -e
-
-          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/JarBox.app"
-
-          cp \
-            "J2MEEmulator/Resources/jars/minijvm_rt.jar" \
-            "$APP/minijvm_rt.jar"
-
-          cp \
-            "J2MEEmulator/Resources/jars/j2me_api.jar" \
-            "$APP/j2me_api.jar"
-
-          echo ""
-          echo "Runtime files inside app:"
-
-          ls -lh \
-            "$APP/minijvm_rt.jar" \
-            "$APP/j2me_api.jar"
-
-
-      # ============================================================
-      # 13. Verify files INSIDE .app
-      # ============================================================
-
-      - name: Verify runtime inside app
-        run: |
-          set -e
-
-          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/JarBox.app"
-
-          API="$APP/j2me_api.jar"
-
-          RUNTIME="$APP/minijvm_rt.jar"
-
-          test -s "$API"
-          test -s "$RUNTIME"
-
-          echo ""
-          echo "Checking MIDletRunner inside final app..."
-
-          if ! jar tf "$API" | grep -q \
-            '^javax/microedition/shell/MIDletRunner\.class$'
-          then
-            echo ""
-            echo "FATAL:"
-            echo "Final app does not contain MIDletRunner.class"
-            exit 1
-          fi
-
-          echo ""
-          echo "MIDletRunner verified inside final app."
-
-
-      # ============================================================
-      # 14. Check minimum iOS version
-      # ============================================================
-
-      - name: Verify iOS deployment target
-        run: |
-          set -e
-
-          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/JarBox.app"
-
-          MIN_OS=$(
-            /usr/libexec/PlistBuddy \
-              -c 'Print :MinimumOSVersion' \
-              "$APP/Info.plist"
-          )
-
-          echo ""
-          echo "MinimumOSVersion = $MIN_OS"
-
-          if [ "$MIN_OS" != "16.4" ]; then
-            echo ""
-            echo "ERROR: Expected iOS 16.4"
-            exit 1
-          fi
-
-
-      # ============================================================
-      # 15. Package IPA
-      # ============================================================
+          echo "=== After slim ==="
+          du -sh "$APP_PATH"
+          find "$APP_PATH" -type f -print0 | xargs -0 du -h | sort -h | tail -30
 
       - name: Package IPA
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/JarBox.app"
+          rm -rf build/Payload build/J2MEEmulator-slim.ipa
+          mkdir -p build/Payload
 
-          rm -rf Payload
-          mkdir -p Payload
+          cp -R "$APP_PATH" build/Payload/
 
-          ditto \
-            "$APP" \
-            "Payload/J2MEPlayer.app"
+          # IPA is a ZIP container. Store already-compressed/binary data
+          # normally; do not add unnecessary files.
+          (
+            cd build
+            /usr/bin/zip -qry \
+              J2MEEmulator-slim.ipa \
+              Payload
+          )
 
-          rm -f JarBox2-iOS-unsigned.ipa
+          echo "=== Final IPA ==="
+          ls -lh build/J2MEEmulator-slim.ipa
 
-          /usr/bin/zip \
-            -qry \
-            JarBox2-iOS-unsigned.ipa \
-            Payload
-
-          test -s JarBox2-iOS-unsigned.ipa
-
-          echo ""
-          echo "IPA:"
-          ls -lh JarBox2-iOS-unsigned.ipa
-
-
-      # ============================================================
-      # 16. Verify IPA contents
-      # ============================================================
-
-      - name: Verify IPA
-        run: |
-          set -e
-
-          echo ""
-          echo "========================================"
-          echo "IPA runtime verification"
-          echo "========================================"
-
-          unzip -Z1 JarBox2-iOS-unsigned.ipa \
-            | grep \
-              -E '^Payload/J2MEPlayer\.app/(minijvm_rt|j2me_api)\.jar$'
-
-          echo ""
-          echo "Checking MIDletRunner inside IPA..."
-
-          TMP_IPA="$RUNNER_TEMP/ipa_check"
-
-          rm -rf "$TMP_IPA"
-
-          mkdir -p "$TMP_IPA"
-
-          unzip -q \
-            JarBox2-iOS-unsigned.ipa \
-            -d "$TMP_IPA"
-
-          API="$TMP_IPA/Payload/J2MEPlayer.app/j2me_api.jar"
-
-          if ! jar tf "$API" | grep -q \
-            '^javax/microedition/shell/MIDletRunner\.class$'
-          then
-            echo ""
-            echo "ERROR: MIDletRunner missing from final IPA."
-            exit 1
-          fi
-
-          echo ""
-          echo "========================================"
-          echo "FINAL RUNTIME CHECK: PASS"
-          echo "========================================"
-
-
-      # ============================================================
-      # 17. Upload IPA
-      # ============================================================
+          echo "=== Final archive contents ==="
+          unzip -l build/J2MEEmulator-slim.ipa | tail -20
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: JarBox2-iOS-unsigned
-          path: JarBox2-iOS-unsigned.ipa
+          name: J2MEEmulator-slim-ipa
+          path: build/J2MEEmulator-slim.ipa
           if-no-files-found: error
-          retention-days: 14
+          compression-level: 0
+          retention-days: 7
 
-
-      # ============================================================
-      # 18. Upload build log
-      # ============================================================
-
-      - name: Upload build log
-        if: always()
+      - name: Upload build diagnostics
         uses: actions/upload-artifact@v4
         with:
-          name: JarBox2-iOS-build-log
-          path: ${{ runner.temp }}/xcodebuild.log
-          if-no-files-found: ignore
-          retention-days: 7
+          name: J2MEEmulator-build-diagnostics
+          path: |
+            build/J2MEEmulator.xcarchive/Info.plist
+            build/J2MEEmulator-slim.ipa
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 3
