@@ -127,14 +127,20 @@ static void untrack_midi_player(AVMIDIPlayer *player) {
 void j2me_audio_set_active_jvm(MiniJVM *jvm) {
     @synchronized ([AVAudioSession class]) {
         ensureOwnerTables();
+
+        // AVAudioPlayer hỗ trợ volume riêng từng player.
         for (AVAudioPlayer *p in [g_active_audio_players copy]) {
             NSValue *owner = [g_audio_owner objectForKey:p];
             p.volume = ([owner pointerValue] == jvm) ? 1.0 : 0.0;
         }
-        for (AVMIDIPlayer *p in [g_active_midi_players copy]) {
-            NSValue *owner = [g_midi_owner objectForKey:p];
-            p.volume = ([owner pointerValue] == jvm) ? 1.0 : 0.0;
-        }
+
+        /*
+         * AVMIDIPlayer không có property volume.
+         * Không được gọi p.volume ở đây.
+         *
+         * MIDI player vẫn được track riêng theo từng JVM và được
+         * stop/release khi JVM/session của nó kết thúc.
+         */
     }
 }
 
