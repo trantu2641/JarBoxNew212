@@ -310,8 +310,8 @@
 
 - (void)showSettings {
     UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Bàn phím" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    [a addAction:[UIAlertAction actionWithTitle:self.vietnamese?@"✓ Tiếng Việt (Việt Nam)":"Tiếng Việt" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ self.vietnamese=YES; self.ime.language=@"vi"; self.ime.telexEnabled=YES; [self reloadKeyboard]; }]];
-    [a addAction:[UIAlertAction actionWithTitle:!self.vietnamese?@"✓ English (US)":"English (US)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ self.vietnamese=NO; self.ime.language=@"en"; self.ime.telexEnabled=NO; [self reloadKeyboard]; }]];
+    [a addAction:[UIAlertAction actionWithTitle:self.vietnamese ? @"✓ Tiếng Việt (Việt Nam)" : @"Tiếng Việt" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ self.vietnamese=YES; self.ime.language=@"vi"; self.ime.telexEnabled=YES; [self reloadKeyboard]; }]];
+    [a addAction:[UIAlertAction actionWithTitle:!self.vietnamese ? @"✓ English (US)" : @"English (US)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ self.vietnamese=NO; self.ime.language=@"en"; self.ime.telexEnabled=NO; [self reloadKeyboard]; }]];
     [a addAction:[UIAlertAction actionWithTitle:@"Cài đặt ngôn ngữ" style:UIAlertActionStyleDefault handler:nil]];
     [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
     UIViewController *vc=self.window.rootViewController; while(vc.presentedViewController) vc=vc.presentedViewController; if(vc){a.popoverPresentationController.sourceView=self; a.popoverPresentationController.sourceRect=CGRectMake(self.bounds.size.width/2,self.bounds.size.height/2,1,1); [vc presentViewController:a animated:YES completion:nil];}
