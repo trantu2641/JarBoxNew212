@@ -1,0 +1,87 @@
+*** Begin Patch
+*** Update File: J2MEEmulator/UI/GameViewController.swift
+@@
+     private var keypadHeightConstraint: NSLayoutConstraint!
+     private var keypadCollapsedConstraint: NSLayoutConstraint!
+     private var keypadBottomConstraint: NSLayoutConstraint!
++    private var emulatorToKeypadBottomConstraint: NSLayoutConstraint!
++    private var emulatorToKeyboardBottomConstraint: NSLayoutConstraint!
++    private var qwertyKeyboardHeightConstraint: NSLayoutConstraint!
+@@
+         NSLayoutConstraint.activate([
+@@
+             emulatorView.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 5),
+             emulatorView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+             emulatorView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+-            emulatorView.bottomAnchor.constraint(equalTo: keypadView.topAnchor, constant: -8),
++            keypadView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 2),
++            keypadView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -2),
++            keypadBottomConstraint,
++            keypadHeightConstraint,
++            qwertyKeyboardView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4),
++            qwertyKeyboardView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4),
++            qwertyKeyboardView.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -4),
++            qwertyKeyboardView.heightAnchor.constraint(equalToConstant: 0)
++        ])
++
++        emulatorToKeypadBottomConstraint = emulatorView.bottomAnchor.constraint(equalTo: keypadView.topAnchor, constant: -8)
++        emulatorToKeyboardBottomConstraint = emulatorView.bottomAnchor.constraint(equalTo: qwertyKeyboardView.topAnchor, constant: -8)
++        qwertyKeyboardHeightConstraint = qwertyKeyboardView.heightAnchor.constraint(equalToConstant: 0)
++
++        emulatorToKeypadBottomConstraint.isActive = true
++        emulatorToKeyboardBottomConstraint.isActive = false
++        qwertyKeyboardHeightConstraint.isActive = true
+-            keypadView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 2),
+-            keypadView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -2),
+-            keypadBottomConstraint,
+-            keypadHeightConstraint,
+-            qwertyKeyboardView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4),
+-            qwertyKeyboardView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4),
+-            qwertyKeyboardView.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -4),
+-            qwertyKeyboardView.heightAnchor.constraint(equalToConstant: 285)
+-        ])
+     }
+@@
+     func presentTextInputPopup(title: String = "Nhập văn bản", initialText: String = "", maxSize: Int = 256, constraints: Int = 0) {
+         _ = title; _ = maxSize; _ = constraints
+         hideSystemKeyboard()
+         keyboardIsVisible = true
+         qwertyTextBuffer = initialText
++        activateQwertyKeyboardLayout(height: 285, animated: true)
+         qwertyKeyboardView.begin(initialText: initialText)
+         qwertyKeyboardView.isHidden = false
+         view.bringSubviewToFront(qwertyKeyboardView)
+         setKeypadVisible(false, duration: 0.12)
+     }
+@@
+     private func finishQWERTYInput(confirm: Bool) {
+         if confirm { sendTextStringToGame(qwertyTextBuffer) }
++        qwertyKeyboardView.dismissKeyboard()
+         qwertyKeyboardView.isHidden = true
+         keyboardIsVisible = false
+         qwertyTextBuffer = ""
++        activateQwertyKeyboardLayout(height: 0, animated: true)
+         if isCanvasScreenVisible && !userRequestedExit {
+             setKeypadVisible(true, duration: 0.18)
+         }
+     }
++
++    private func activateQwertyKeyboardLayout(height: CGFloat, animated: Bool) {
++        guard qwertyKeyboardHeightConstraint != nil else { return }
++        qwertyKeyboardHeightConstraint.constant = height
++
++        let keyboardActive = height > 0
++        emulatorToKeypadBottomConstraint.isActive = !keyboardActive
++        emulatorToKeyboardBottomConstraint.isActive = keyboardActive
++
++        let changes = { self.view.layoutIfNeeded() }
++        if animated {
++            UIView.animate(withDuration: 0.22,
++                           delay: 0,
++                           options: [.beginFromCurrentState, .curveEaseOut],
++                           animations: changes)
++        } else {
++            UIView.performWithoutAnimation { changes() }
++        }
++    }
+*** End Patch

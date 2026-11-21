@@ -1,0 +1,18 @@
+Layout integration summary
+
+GameViewController needs three constraints:
+- emulatorToKeypadBottomConstraint
+- emulatorToKeyboardBottomConstraint
+- qwertyKeyboardHeightConstraint
+
+Normal mode:
+  emulatorView -> keypadView.topAnchor
+  qwerty height = 0
+
+Text input mode:
+  emulatorView -> qwertyKeyboardView.topAnchor
+  qwerty height = 285
+  keypad is collapsed
+
+This makes the emulator viewport physically resize instead of allowing the
+custom keyboard to cover the game.

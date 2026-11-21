@@ -2,8 +2,9 @@
 // J2MEQWERTYKeyboardView.swift
 // JarBox Gboard-style keyboard adapter.
 //
-// This keeps the existing GameViewController API so the rest of JarBox does
-// not need to know that the keyboard implementation was replaced.
+// One keyboard manager is owned by this view. This is important because
+// JarBox can have multiple JAR sessions/tabs and a global singleton would
+// mix text/callbacks between sessions.
 //
 import UIKit
 
@@ -15,19 +16,16 @@ final class J2MEQWERTYKeyboardView: UIView {
     private var text = "" {
         didSet { onTextChanged?(text) }
     }
-    private var attached = false
-    private var theme = UserDefaults.standard.string(forKey: "J2MEQWERTYTheme") ?? "dark"
 
-    private var manager: JBKeyboardManager {
-        JBKeyboardManager.shared
-    }
+    private var attached = false
+    private let manager = JBKeyboardManager()
+    private var theme = UserDefaults.standard.string(forKey: "J2MEQWERTYTheme") ?? "dark"
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
         clipsToBounds = true
         isHidden = true
-        manager.keyboardHeight = max(180, min(420, frame.height > 0 ? frame.height : 285))
         installManagerCallbacks()
     }
 
@@ -39,25 +37,28 @@ final class J2MEQWERTYKeyboardView: UIView {
         super.didMoveToSuperview()
         guard !attached, superview != nil else { return }
         attached = true
+
         manager.hostViewController = nearestViewController()
-        manager.attach(to: self)
-        manager.setKeyboardHeight(max(180, min(420, bounds.height > 0 ? bounds.height : 285)), animated: false)
+        manager.attachToView(self)
+        manager.setKeyboardHeight(clampedKeyboardHeight(), animated: false)
         manager.hide()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         guard attached else { return }
-        let h = max(180, min(420, bounds.height))
-        manager.setKeyboardHeight(h, animated: false)
+        manager.setKeyboardHeight(clampedKeyboardHeight(), animated: false)
     }
 
     func begin(initialText: String = "") {
         text = initialText
         manager.keyboardView.vietnamese = true
         manager.keyboardView.shift = false
-        manager.show()
+        manager.keyboardView.ime.language = "vi"
+        manager.keyboardView.ime.telexEnabled = true
+        manager.setKeyboardHeight(clampedKeyboardHeight(), animated: false)
         isHidden = false
+        manager.show()
     }
 
     func clear() {
@@ -67,9 +68,17 @@ final class J2MEQWERTYKeyboardView: UIView {
     func setTheme(_ value: String) {
         theme = value
         UserDefaults.standard.set(value, forKey: "J2MEQWERTYTheme")
-        // JBKeyboardView owns its visual theme. Keep the setting so a future
-        // theme reload can use the same preference without changing callers.
         manager.keyboardView.reloadKeyboard()
+    }
+
+    func dismissKeyboard() {
+        manager.hide()
+        isHidden = true
+        onCancel?()
+    }
+
+    private func clampedKeyboardHeight() -> CGFloat {
+        max(180, min(420, bounds.height > 0 ? bounds.height : 285))
     }
 
     private func installManagerCallbacks() {
@@ -90,6 +99,7 @@ final class J2MEQWERTYKeyboardView: UIView {
         manager.returnHandler = { [weak self] in
             guard let self else { return }
             self.manager.hide()
+            self.isHidden = true
             self.onDone?()
         }
     }
@@ -101,11 +111,5 @@ final class J2MEQWERTYKeyboardView: UIView {
             responder = current.next
         }
         return nil
-    }
-}
-
-private extension JBKeyboardManager {
-    func attach(to hostView: UIView) {
-        attachToView(hostView)
     }
 }
