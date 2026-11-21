@@ -7,8 +7,8 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol JBKeyboardViewDelegate <NSObject>
 - (void)keyboardView:(JBKeyboardView *)keyboardView didInsertText:(NSString *)text;
 - (void)keyboardViewDidTapBackspace:(JBKeyboardView *)keyboardView;
-- (void)keyboardViewDidTapReturn:(JBKeyboardView *)keyboardView;     // Xuống dòng (\n)
-- (void)keyboardViewDidTapSubmit:(JBKeyboardView *)keyboardView;     // Gửi văn bản vào game JAR
+- (void)keyboardViewDidTapReturn:(JBKeyboardView *)keyboardView;
+- (void)keyboardViewDidTapSubmit:(JBKeyboardView *)keyboardView;
 - (void)keyboardViewDidTapHide:(JBKeyboardView *)keyboardView;
 - (void)keyboardView:(JBKeyboardView *)keyboardView didChangeHeight:(CGFloat)newHeight;
 - (void)keyboardView:(JBKeyboardView *)keyboardView didToggleFloatingMode:(BOOL)isFloating;

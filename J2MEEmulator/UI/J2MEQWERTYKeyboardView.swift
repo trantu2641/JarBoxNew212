@@ -29,12 +29,15 @@ final class J2MEQWERTYKeyboardView: UIView, JBKeyboardViewDelegate {
     }
 
     private func setup() {
+        preservesSuperviewLayoutMargins = false
+        insetsLayoutMarginsFromSafeArea = false
+        layoutMargins = .zero
         backgroundColor = UIColor(red: 0.106, green: 0.110, blue: 0.118, alpha: 1.0)
+
         gboardView.delegate = self
         gboardView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(gboardView)
 
-        // Tràn 2 mép màn hình 100% (leading = 0, trailing = 0)
         NSLayoutConstraint.activate([
             gboardView.topAnchor.constraint(equalTo: topAnchor),
             gboardView.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -56,17 +59,29 @@ final class J2MEQWERTYKeyboardView: UIView, JBKeyboardViewDelegate {
 
     override func didMoveToSuperview() {
         super.didMoveToSuperview()
+        guard let host = superview else { return }
+
+        // Ép chặt 2 mép trái/phải sát 100% viền màn hình & neo cố định mép dưới
+        for c in host.constraints where (c.firstItem as? UIView) === self || (c.secondItem as? UIView) === self {
+            if c.firstAttribute == .leading || c.firstAttribute == .trailing || c.firstAttribute == .bottom {
+                c.isActive = false
+            }
+        }
+        NSLayoutConstraint.activate([
+            leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            bottomAnchor.constraint(equalTo: host.bottomAnchor)
+        ])
         updateEmulatorScreenShift()
     }
 
-    // MARK: - Đẩy UI màn hình JAR lên để không bị bàn phím che
+    // MARK: - Đẩy UI game JAR lên cao khỏi khung nhập 40px
 
     private func updateEmulatorScreenShift() {
         guard let host = superview else { return }
         let isVisible = !isHidden && alpha > 0.01
-        let kbHeight = heightConstraint?.constant ?? (gboardView.preferredKeyboardHeight + safeAreaInsets.bottom)
+        let totalKbHeight = heightConstraint?.constant ?? (gboardView.preferredKeyboardHeight + safeAreaInsets.bottom)
 
-        // Tìm các view render màn hình game JAR (EmulatorView / GLKView / MTKView)
         let targetViews = host.subviews.filter { sub in
             if sub === self { return false }
             let className = NSStringFromClass(type(of: sub))
@@ -76,12 +91,14 @@ final class J2MEQWERTYKeyboardView: UIView, JBKeyboardViewDelegate {
                 || className.contains("Display")
         }
 
-        UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
+        UIView.animate(withDuration: 0.20, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
             for target in targetViews {
                 if isVisible {
-                    // Tính phần màn hình game bị bàn phím đè lên và đẩy lên đúng khoảng đó
-                    let overlap = max(0, target.frame.maxY - (host.bounds.height - kbHeight))
-                    let shiftY = overlap > 0 ? min(overlap, kbHeight * 0.85) : (kbHeight * 0.42)
+                    // Tính phần bị bàn phím + khung nhập 40px đè lên và đẩy cao thêm 20px thoáng mắt
+                    let baseFrame = target.frame.applying(target.transform.inverted())
+                    let keyboardTopY = host.bounds.height - totalKbHeight
+                    let overlap = max(0, baseFrame.maxY - keyboardTopY)
+                    let shiftY = overlap > 0 ? (overlap + 20.0) : (totalKbHeight * 0.55)
                     target.transform = CGAffineTransform(translationX: 0, y: -shiftY)
                 } else {
                     target.transform = .identity
@@ -122,7 +139,6 @@ final class J2MEQWERTYKeyboardView: UIView, JBKeyboardViewDelegate {
     }
 
     func keyboardViewDidTapReturn(_ keyboardView: JBKeyboardView) {
-        // Phím xuống dòng (\n)
         textBuffer.append("\n")
         onTextChanged?(textBuffer)
         delegate?.qwertyKeyboardDidInsertText("\n")
@@ -130,10 +146,9 @@ final class J2MEQWERTYKeyboardView: UIView, JBKeyboardViewDelegate {
     }
 
     func keyboardViewDidTapSubmit(_ keyboardView: JBKeyboardView) {
-        // Nút gửi văn bản trên thanh công cụ
         onDone?()
         delegate?.qwertyKeyboardDidTapHide()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
             self.updateEmulatorScreenShift()
         }
     }
@@ -141,7 +156,7 @@ final class J2MEQWERTYKeyboardView: UIView, JBKeyboardViewDelegate {
     func keyboardViewDidTapHide(_ keyboardView: JBKeyboardView) {
         delegate?.qwertyKeyboardDidTapHide()
         onCancel?()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
             self.updateEmulatorScreenShift()
         }
     }
