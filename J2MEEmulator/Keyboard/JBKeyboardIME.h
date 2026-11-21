@@ -2,14 +2,19 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface JBKeyboardIME : NSObject
-@property(nonatomic, copy) NSString *language; // vi / en
-@property(nonatomic, assign) BOOL telexEnabled;
+typedef NS_ENUM(NSInteger, JBInputLanguage) {
+    JBInputLanguageVietnamese = 0,
+    JBInputLanguageEnglish = 1
+};
 
-- (NSString *)insertText:(NSString *)text into:(NSString *)currentText;
-- (NSString *)deleteBackwardFrom:(NSString *)currentText;
-- (NSString *)commitComposition:(NSString *)currentText;
-- (NSArray<NSString *> *)suggestionsForText:(NSString *)text;
+@interface JBKeyboardIME : NSObject
+
+@property (nonatomic, assign) JBInputLanguage currentLanguage;
+@property (nonatomic, readonly) NSString *languageDisplayName; // "Tiếng Việt" hoặc "English (US)"
+
+- (NSString *)processKey:(NSString *)keyChar withCurrentBuffer:(NSString *)buffer deleteCount:(NSInteger *)outDeleteCount;
+- (NSArray<NSString *> *)accentVariantsForKey:(NSString *)baseKey uppercase:(BOOL)uppercase;
+
 @end
 
 NS_ASSUME_NONNULL_END

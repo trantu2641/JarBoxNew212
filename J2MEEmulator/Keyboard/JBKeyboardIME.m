@@ -2,143 +2,72 @@
 
 @implementation JBKeyboardIME
 
-- (instancetype)init {
-    self = [super init];
-    if (self) {
-        _language = @"vi";
-        _telexEnabled = YES;
-    }
-    return self;
+- (NSString *)languageDisplayName {
+    return (self.currentLanguage == JBInputLanguageVietnamese) ? @"Tiếng Việt" : @"English (US)";
 }
 
-static BOOL JBIsVowel(unichar c) {
-    return [[NSCharacterSet characterSetWithCharactersInString:@"aeiouyAEIOUY"] characterIsMember:c];
-}
-
-static NSString *JBReplaceLastBase(NSString *s, NSString *base, NSString *replacement) {
-    NSRange r = [s rangeOfString:base options:NSBackwardsSearch];
-    if (r.location == NSNotFound) return s;
-    return [s stringByReplacingCharactersInRange:r withString:replacement];
-}
-
-- (NSString *)applyTelexToWord:(NSString *)word {
-    if (!self.telexEnabled || ![self.language isEqualToString:@"vi"] || word.length < 2)
-        return word;
-
-    NSString *w = word;
-    NSArray *pairs = @[
-        @[@"aa",@"â"], @[@"AA",@"Â"],
-        @[@"aw",@"ă"], @[@"AW",@"Ă"],
-        @[@"ee",@"ê"], @[@"EE",@"Ê"],
-        @[@"oo",@"ô"], @[@"OO",@"Ô"],
-        @[@"ow",@"ơ"], @[@"OW",@"Ơ"],
-        @[@"uw",@"ư"], @[@"UW",@"Ư"]
-    ];
-
-    for (NSArray *p in pairs) {
-        if ([w hasSuffix:p[0]]) {
-            NSString *pairKey = (NSString *)[p objectAtIndex:0];
-            NSString *pairValue = (NSString *)[p objectAtIndex:1];
-            w = [w substringToIndex:w.length - pairKey.length];
-            w = [w stringByAppendingString:pairValue];
-            break;
-        }
-    }
-
-    if (w.length >= 2) {
-        unichar mark = [w characterAtIndex:w.length - 1];
-        NSString *markMap = @"sfrxj";
-        NSRange mr = [markMap rangeOfString:[NSString stringWithCharacters:&mark length:1]
-                                   options:NSCaseInsensitiveSearch];
-        if (mr.location != NSNotFound) {
-            NSString *base = [w substringToIndex:w.length - 1];
-            NSArray *toneTables = @[
-                @[@"á",@"à",@"ả",@"ã",@"ạ"],
-                @[@"é",@"è",@"ẻ",@"ẽ",@"ẹ"],
-                @[@"í",@"ì",@"ỉ",@"ĩ",@"ị"],
-                @[@"ó",@"ò",@"ỏ",@"õ",@"ọ"],
-                @[@"ú",@"ù",@"ủ",@"ũ",@"ụ"],
-                @[@"ý",@"ỳ",@"ỷ",@"ỹ",@"ỵ"],
-                @[@"ắ",@"ằ",@"ẳ",@"ẵ",@"ặ"],
-                @[@"ấ",@"ầ",@"ẩ",@"ẫ",@"ậ"],
-                @[@"ế",@"ề",@"ể",@"ễ",@"ệ"],
-                @[@"ố",@"ồ",@"ổ",@"ỗ",@"ộ"],
-                @[@"ớ",@"ờ",@"ở",@"ỡ",@"ợ"],
-                @[@"ứ",@"ừ",@"ử",@"ữ",@"ự"],
-                @[@"ố",@"ồ",@"ổ",@"ỗ",@"ộ"]
-            ];
-            // Find the last vowel in the word and replace its accented form.
-            for (NSInteger i = base.length - 1; i >= 0; i--) {
-                unichar c = [base characterAtIndex:i];
-                if (JBIsVowel(c)) {
-                    NSString *v = [NSString stringWithCharacters:&c length:1];
-                    NSInteger idx = NSNotFound;
-                    NSArray *mapBase = @[@"a",@"e",@"i",@"o",@"u",@"y",@"ă",@"â",@"ê",@"ô",@"ơ",@"ư",@"O"];
-                    for (NSInteger k=0;k<mapBase.count;k++) {
-                        if ([v lowercaseString].length && [[v lowercaseString] isEqualToString:[mapBase[k] lowercaseString]]) {
-                            idx = k; break;
-                        }
-                    }
-                    if (idx != NSNotFound && idx < toneTables.count) {
-                        NSArray *toneRow = (NSArray *)[toneTables objectAtIndex:idx];
-                        NSString *rep = (NSString *)[toneRow objectAtIndex:mr.location];
-                        if ([[v uppercaseString] isEqualToString:v]) rep = [rep uppercaseString];
-                        base = [base stringByReplacingCharactersInRange:NSMakeRange(i,1) withString:rep];
-                    }
-                    break;
-                }
-            }
-            w = base;
-        }
-    }
-    return w;
-}
-
-- (NSString *)insertText:(NSString *)text into:(NSString *)currentText {
-    if (!text.length) return currentText ?: @"";
-    NSString *s = [NSString stringWithFormat:@"%@%@", currentText ?: @"", text];
-    if (![self.language isEqualToString:@"vi"] || !self.telexEnabled) return s;
-
-    NSRange r = [s rangeOfCharacterFromSet:[NSCharacterSet whitespaceAndNewlineCharacterSet] options:NSBackwardsSearch];
-    NSUInteger start = (r.location == NSNotFound) ? 0 : r.location + 1;
-    NSString *prefix = [s substringToIndex:start];
-    NSString *word = [s substringFromIndex:start];
-
-    if (word.length > 0) {
-        word = [self applyTelexToWord:word];
-        return [prefix stringByAppendingString:word];
-    }
-    return s;
-}
-
-- (NSString *)deleteBackwardFrom:(NSString *)currentText {
-    if (!currentText.length) return @"";
-    return [currentText substringToIndex:currentText.length - 1];
-}
-
-- (NSString *)commitComposition:(NSString *)currentText {
-    return currentText ?: @"";
-}
-
-- (NSArray<NSString *> *)suggestionsForText:(NSString *)text {
-    if (!text.length) return @[];
-    // Lightweight local suggestions. This is intentionally offline and can be
-    // replaced later by a larger dictionary without changing the keyboard UI.
-    NSDictionary *dict = @{
-        @"xin": @[@"xin", @"xinh", @"xin chào"],
-        @"chao": @[@"chào", @"chào bạn"],
-        @"toi": @[@"tôi", @"tới"],
-        @"ban": @[@"bạn", @"bàn", @"bản"],
-        @"khong": @[@"không"],
-        @"duoc": @[@"được"],
-        @"viet": @[@"viết", @"Việt"],
-        @"anh": @[@"anh", @"ảnh", @"ánh"],
-        @"em": @[@"em", @"êm"],
-        @"game": @[@"game"],
-        @"jar": @[@"JAR"],
+- (NSArray<NSString *> *)accentVariantsForKey:(NSString *)baseKey uppercase:(BOOL)uppercase {
+    NSString *k = baseKey.lowercaseString;
+    NSDictionary<NSString *, NSArray<NSString *> *> *map = @{
+        @"q": @[@"1"],
+        @"w": @[@"2"],
+        @"e": @[@"ễ", @"ế", @"ể", @"ệ", @"ê", @"ẽ", @"ẹ", @"ề", @"é", @"3", @"è", @"ẻ"],
+        @"r": @[@"4"],
+        @"t": @[@"5"],
+        @"y": @[@"ỹ", @"ý", @"ỷ", @"ỵ", @"6", @"ỳ"],
+        @"u": @[@"ữ", @"ứ", @"ử", @"ự", @"ư", @"ũ", @"ụ", @"ừ", @"ú", @"7", @"ù", @"ủ"],
+        @"i": @[@"ĩ", @"í", @"ỉ", @"ị", @"8", @"ì"],
+        @"o": @[@"ỗ", @"ố", @"ổ", @"ộ", @"ô", @"ỡ", @"ớ", @"ở", @"ợ", @"ơ", @"õ", @"ọ", @"ồ", @"ó", @"9", @"ò", @"ỏ"],
+        @"p": @[@"0"],
+        @"a": @[@"ẫ", @"ấ", @"ẩ", @"ậ", @"â", @"ẵ", @"ắ", @"ẳ", @"ặ", @"ă", @"ã", @"ạ", @"ầ", @"á", @"à", @"ả"],
+        @"d": @[@"đ"]
     };
-    NSString *key = text.lowercaseString;
-    return dict[key] ?: @[text];
+    NSArray<NSString *> *list = map[k];
+    if (!list) return @[];
+    if (!uppercase) return list;
+    
+    NSMutableArray *upperList = [NSMutableArray arrayWithCapacity:list.count];
+    for (NSString *item in list) {
+        [upperList addObject:[item uppercaseStringWithLocale:[NSLocale localeWithLocaleIdentifier:@"vi_VN"]]];
+    }
+    return upperList;
+}
+
+- (NSString *)processKey:(NSString *)keyChar withCurrentBuffer:(NSString *)buffer deleteCount:(NSInteger *)outDeleteCount {
+    if (outDeleteCount) *outDeleteCount = 0;
+    if (self.currentLanguage == JBInputLanguageEnglish || buffer.length == 0) {
+        return keyChar;
+    }
+    
+    // Xử lý Telex cơ bản trên ký tự cuối cùng của buffer
+    NSString *lastChar = [buffer substringFromIndex:buffer.length - 1];
+    NSString *lowLast = lastChar.lowercaseString;
+    NSString *lowKey = keyChar.lowercaseString;
+    BOOL isUpper = ![lastChar isEqualToString:lowLast];
+    
+    NSDictionary *telexRules = @{
+        @"a+a": @"â", @"a+w": @"ă", @"e+e": @"ê", @"o+o": @"ô", @"o+w": @"ơ", @"u+w": @"ư", @"d+d": @"đ",
+        @"a+s": @"á", @"a+f": @"à", @"a+r": @"ả", @"a+x": @"ã", @"a+j": @"ạ",
+        @"â+s": @"ấ", @"â+f": @"ầ", @"â+r": @"ẩ", @"â+x": @"ẫ", @"â+j": @"ậ",
+        @"ă+s": @"ắ", @"ă+f": @"ằ", @"ă+r": @"ẳ", @"ă+x": @"ẵ", @"ă+j": @"ặ",
+        @"e+s": @"é", @"e+f": @"è", @"e+r": @"ẻ", @"e+x": @"ẽ", @"e+j": @"ẹ",
+        @"ê+s": @"ế", @"ê+f": @"ề", @"ê+r": @"ể", @"ê+x": @"ễ", @"ê+j": @"ệ",
+        @"i+s": @"í", @"i+f": @"ì", @"i+r": @"ỉ", @"i+x": @"ĩ", @"i+j": @"ị",
+        @"o+s": @"ó", @"o+f": @"ò", @"o+r": @"ỏ", @"o+x": @"õ", @"o+j": @"ọ",
+        @"ô+s": @"ố", @"ô+f": @"ồ", @"ô+r": @"ổ", @"ô+x": @"ỗ", @"ô+j": @"ộ",
+        @"ơ+s": @"ớ", @"ơ+f": @"ờ", @"ơ+r": @"ở", @"ơ+x": @"ỡ", @"ơ+j": @"ợ",
+        @"u+s": @"ú", @"u+f": @"ù", @"u+r": @"ủ", @"u+x": @"ũ", @"u+j": @"ụ",
+        @"ư+s": @"ứ", @"ư+f": @"ừ", @"ư+r": @"ử", @"ư+x": @"ữ", @"ư+j": @"ự",
+        @"y+s": @"ý", @"y+f": @"ỳ", @"y+r": @"ỷ", @"y+x": @"ỹ", @"y+j": @"ỵ"
+    };
+    
+    NSString *pair = [NSString stringWithFormat:@"%@+%@", lowLast, lowKey];
+    NSString *mapped = telexRules[pair];
+    if (mapped) {
+        if (outDeleteCount) *outDeleteCount = 1;
+        return isUpper ? [mapped uppercaseStringWithLocale:[NSLocale localeWithLocaleIdentifier:@"vi_VN"]] : mapped;
+    }
+    return keyChar;
 }
 
 @end

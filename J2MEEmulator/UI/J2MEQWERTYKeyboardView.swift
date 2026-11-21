@@ -1,116 +1,70 @@
-//
-// J2MEQWERTYKeyboardView.swift
-// JarBox Gboard-style keyboard adapter.
-//
-
 import UIKit
 
-final class J2MEQWERTYKeyboardView: UIView {
-    var onTextChanged: ((String) -> Void)?
-    var onDone: (() -> Void)?
-    var onCancel: (() -> Void)?
+@objc protocol J2MEQWERTYKeyboardViewDelegate: AnyObject {
+    func qwertyKeyboardDidInsertText(_ text: String)
+    func qwertyKeyboardDidTapBackspace()
+    func qwertyKeyboardDidTapReturn()
+    func qwertyKeyboardDidTapHide()
+}
 
-    private var text = "" {
-        didSet { onTextChanged?(text) }
-    }
-
-    private var attached = false
-    private let manager = JBKeyboardManager()
-    private var theme = UserDefaults.standard.string(forKey: "J2MEQWERTYTheme") ?? "dark"
+final class J2MEQWERTYKeyboardView: UIView, JBKeyboardViewDelegate {
+    weak var delegate: J2MEQWERTYKeyboardViewDelegate?
+    private let gboardView = JBKeyboardView(frame: .zero)
+    private var heightConstraint: NSLayoutConstraint?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .clear
-        clipsToBounds = true
-        isHidden = true
-        installManagerCallbacks()
+        setup()
     }
 
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        super.init(coder: coder)
+        setup()
     }
 
-    override func didMoveToSuperview() {
-        super.didMoveToSuperview()
-        guard !attached, superview != nil else { return }
-        attached = true
+    private func setup() {
+        backgroundColor = UIColor(red: 0.106, green: 0.110, blue: 0.118, alpha: 1.0)
+        gboardView.delegate = self
+        gboardView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(gboardView)
 
-        manager.hostViewController = nearestViewController()
-        manager.attach(to: self)
-        manager.setKeyboardHeight(clampedKeyboardHeight(), animated: false)
-        manager.hide()
+        NSLayoutConstraint.activate([
+            gboardView.topAnchor.constraint(equalTo: topAnchor),
+            gboardView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            gboardView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            gboardView.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor)
+        ])
+
+        let hc = heightAnchor.constraint(equalToConstant: gboardView.preferredKeyboardHeight + 24)
+        hc.priority = .defaultHigh
+        hc.isActive = true
+        self.heightConstraint = hc
     }
 
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        guard attached else { return }
-        manager.setKeyboardHeight(clampedKeyboardHeight(), animated: false)
+    // MARK: - JBKeyboardViewDelegate
+    func keyboardView(_ keyboardView: JBKeyboardView, didInsertText text: String) {
+        delegate?.qwertyKeyboardDidInsertText(text)
     }
 
-    func begin(initialText: String = "") {
-        text = initialText
-        manager.keyboardView.vietnamese = true
-        manager.keyboardView.shift = false
-        manager.keyboardView.ime.language = "vi"
-        manager.keyboardView.ime.telexEnabled = true
-        manager.setKeyboardHeight(clampedKeyboardHeight(), animated: false)
-        isHidden = false
-        manager.show()
+    func keyboardViewDidTapBackspace(_ keyboardView: JBKeyboardView) {
+        delegate?.qwertyKeyboardDidTapBackspace()
     }
 
-    func clear() {
-        text = ""
+    func keyboardViewDidTapReturn(_ keyboardView: JBKeyboardView) {
+        delegate?.qwertyKeyboardDidTapReturn()
     }
 
-    func setTheme(_ value: String) {
-        theme = value
-        UserDefaults.standard.set(value, forKey: "J2MEQWERTYTheme")
-        manager.keyboardView.reloadKeyboard()
+    func keyboardViewDidTapHide(_ keyboardView: JBKeyboardView) {
+        delegate?.qwertyKeyboardDidTapHide()
     }
 
-    // Internal dismiss only. Do not call onCancel here because
-    // GameViewController.finishQWERTYInput() is already the owner of the
-    // confirm/cancel callback and would otherwise recurse.
-    func dismissKeyboard() {
-        manager.hide()
-        isHidden = true
+    func keyboardView(_ keyboardView: JBKeyboardView, didChangeHeight newHeight: CGFloat) {
+        heightConstraint?.constant = newHeight + safeAreaInsets.bottom
+        superview?.layoutIfNeeded()
     }
 
-    private func clampedKeyboardHeight() -> CGFloat {
-        max(180, min(420, bounds.height > 0 ? bounds.height : 285))
-    }
-
-    private func installManagerCallbacks() {
-        manager.currentTextProvider = { [weak self] in
-            self?.text ?? ""
-        }
-
-        manager.insertTextHandler = { [weak self] (value: String) in
-            guard let self else { return }
-            self.text.append(contentsOf: value)
-        }
-
-        manager.deleteBackwardHandler = { [weak self] in
-            guard let self, !self.text.isEmpty else { return }
-            self.text.removeLast()
-        }
-
-        manager.returnHandler = { [weak self] in
-            guard let self else { return }
-            self.manager.hide()
-            self.isHidden = true
-            self.onDone?()
-        }
-    }
-
-    private func nearestViewController() -> UIViewController? {
-        var responder: UIResponder? = self
-        while let current = responder {
-            if let controller = current as? UIViewController {
-                return controller
-            }
-            responder = current.next
-        }
-        return nil
+    func keyboardView(_ keyboardView: JBKeyboardView, didToggleFloatingMode isFloating: Bool) {
+        layer.cornerRadius = isFloating ? 18.0 : 0.0
+        layer.masksToBounds = isFloating
     }
 }
