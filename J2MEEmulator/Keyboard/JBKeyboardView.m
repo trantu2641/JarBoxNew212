@@ -1,6 +1,7 @@
 #import "JBKeyboardView.h"
 #import "JBKeyboardIME.h"
 #import "JBClipboardManager.h"
+#import <objc/runtime.h>
 
 typedef NS_ENUM(NSInteger, JBKeyboardPage) {
     JBKeyboardPageLetters = 0,
@@ -11,10 +12,10 @@ typedef NS_ENUM(NSInteger, JBKeyboardPage) {
 
 typedef NS_ENUM(NSInteger, JBOverlayMode) {
     JBOverlayModeNone = 0,
-    JBOverlayModeFeatureGrid = 1,   // Ảnh 2: Menu 6 chức năng
-    JBOverlayModeClipboard = 2,     // Ảnh 3: Bảng nhớ tạm
-    JBOverlayModeResize = 3,        // Chế độ kéo đổi kích thước
-    JBOverlayModeLanguagePicker = 4 // Ảnh 4: Hộp thoại thay đổi bàn phím
+    JBOverlayModeFeatureGrid = 1,
+    JBOverlayModeClipboard = 2,
+    JBOverlayModeResize = 3,
+    JBOverlayModeLanguagePicker = 4
 };
 
 typedef NS_ENUM(NSInteger, JBShiftState) {
@@ -69,20 +70,17 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 @property (nonatomic, strong) UIView *keysContainerView;
 @property (nonatomic, strong) UIView *overlayContainerView;
 
-// Popup nhấn giữ dấu tiếng Việt / số
 @property (nonatomic, strong) UIView *accentPopupView;
 @property (nonatomic, strong) NSArray<NSString *> *currentAccentVariants;
 @property (nonatomic, strong) NSMutableArray<UIButton *> *accentVariantButtons;
 @property (nonatomic, assign) NSInteger selectedAccentIndex;
 
-// Nút trên thanh toolbar
 @property (nonatomic, strong) UIButton *menuGridBtn;
 @property (nonatomic, strong) UIButton *clipboardBtn;
 @property (nonatomic, strong) UIButton *translateBtn;
 @property (nonatomic, strong) UIButton *settingsBtn;
 @property (nonatomic, strong) UIButton *micOrHideBtn;
 
-// Timer xóa liên tục
 @property (nonatomic, strong) NSTimer *backspaceTimer;
 @end
 
@@ -109,13 +107,14 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     return [UIColor colorWithRed:0.000 green:0.290 blue:0.467 alpha:1.0]; // #004A77
 }
 
-#pragma mark - Init
+#pragma mark - Init & Height Bridge
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if (self = [super initWithFrame:frame]) {
         _ime = [[JBKeyboardIME alloc] init];
         _wordBuffer = [NSMutableString string];
         _undoHistory = [NSMutableArray array];
+        _keyboardHeight = 278.0;
         _preferredKeyboardHeight = 278.0;
         _currentPage = JBKeyboardPageLetters;
         _overlayMode = JBOverlayModeNone;
@@ -129,6 +128,18 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
         [self rebuildKeyboardKeys];
     }
     return self;
+}
+
+- (void)setKeyboardHeight:(CGFloat)keyboardHeight {
+    _keyboardHeight = keyboardHeight;
+    _preferredKeyboardHeight = keyboardHeight;
+    [self setNeedsLayout];
+}
+
+- (void)setPreferredKeyboardHeight:(CGFloat)preferredKeyboardHeight {
+    _preferredKeyboardHeight = preferredKeyboardHeight;
+    _keyboardHeight = preferredKeyboardHeight;
+    [self setNeedsLayout];
 }
 
 - (void)setupBaseContainers {
@@ -154,7 +165,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     
     CGFloat toolbarH = 44.0;
     if (self.overlayMode == JBOverlayModeClipboard) {
-        // Màn hình Clipboard chiếm toàn bộ chiều cao bàn phím (Ảnh 3)
         self.toolbarView.hidden = YES;
         self.keysContainerView.hidden = YES;
         self.overlayContainerView.hidden = NO;
@@ -178,20 +188,23 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     }
 }
 
+- (void)reloadKeyboard {
+    [self reloadKeyboardLayout];
+}
+
 - (void)reloadKeyboardLayout {
     [self rebuildToolbar];
     [self rebuildKeyboardKeys];
     [self setNeedsLayout];
 }
 
-#pragma mark - Toolbar (Ảnh 1 & Ảnh 2)
+#pragma mark - Toolbar
 
 - (void)rebuildToolbar {
     [self.toolbarView.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
     
     UIImageSymbolConfiguration *iconCfg = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightMedium];
     
-    // 1. Nút Menu lưới 4 ô vuông hoặc nút X xanh khi đang mở Menu (Ảnh 1 & 2)
     self.menuGridBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.menuGridBtn.layer.cornerRadius = 18.0;
     if (self.overlayMode == JBOverlayModeFeatureGrid) {
@@ -206,28 +219,24 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     [self.menuGridBtn addTarget:self action:@selector(onTapMenuGrid) forControlEvents:UIControlEventTouchUpInside];
     [self.toolbarView addSubview:self.menuGridBtn];
     
-    // 2. Nút Bảng nhớ tạm (Clipboard)
     self.clipboardBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.clipboardBtn.tintColor = [UIColor colorWithWhite:0.88 alpha:1.0];
     [self.clipboardBtn setImage:[UIImage systemImageNamed:@"list.clipboard" withConfiguration:iconCfg] forState:UIControlStateNormal];
     [self.clipboardBtn addTarget:self action:@selector(onTapClipboard) forControlEvents:UIControlEventTouchUpInside];
     [self.toolbarView addSubview:self.clipboardBtn];
     
-    // 3. Nút Dịch / Chuyển bộ gõ nhanh
     self.translateBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.translateBtn.tintColor = [UIColor colorWithWhite:0.88 alpha:1.0];
     [self.translateBtn setImage:[UIImage systemImageNamed:@"character.book.closed" withConfiguration:iconCfg] forState:UIControlStateNormal];
     [self.translateBtn addTarget:self action:@selector(onTapToggleLanguage) forControlEvents:UIControlEventTouchUpInside];
     [self.toolbarView addSubview:self.translateBtn];
     
-    // 4. Nút Cài đặt (Bánh răng)
     self.settingsBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.settingsBtn.tintColor = [UIColor colorWithWhite:0.88 alpha:1.0];
     [self.settingsBtn setImage:[UIImage systemImageNamed:@"gearshape.fill" withConfiguration:iconCfg] forState:UIControlStateNormal];
     [self.settingsBtn addTarget:self action:@selector(onTapResizeMode) forControlEvents:UIControlEventTouchUpInside];
     [self.toolbarView addSubview:self.settingsBtn];
     
-    // 5. Nút tròn bên phải (Mic / Thu gọn bàn phím)
     self.micOrHideBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.micOrHideBtn.backgroundColor = [self gboardFuncKeyColor];
     self.micOrHideBtn.tintColor = [UIColor colorWithWhite:0.92 alpha:1.0];
@@ -255,7 +264,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     self.micOrHideBtn.frame = CGRectMake(w - margin - btnSize, y, btnSize, btnSize);
 }
 
-#pragma mark - Xây dựng bàn phím (Ảnh 1 & Ảnh 5)
+#pragma mark - Xây dựng bàn phím
 
 - (void)rebuildKeyboardKeys {
     [self.keysContainerView.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
@@ -278,7 +287,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
         ];
         topHints = @[@"1",@"2",@"3",@"4",@"5",@"6",@"7",@"8",@"9",@"0"];
     } else if (self.currentPage == JBKeyboardPageSymbols1) {
-        // Ảnh 5 chuẩn xác 100%
         rows = @[
             @[@"1",@"2",@"3",@"4",@"5",@"6",@"7",@"8",@"9",@"0"],
             @[@"@",@"#",@"đ",@"_",@"&",@"-",@"+",@"(",@")",@"/"],
@@ -286,7 +294,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
             @[@"ABC", @",", @"NUMPAD", @"SPACE", @".", @"RETURN"]
         ];
     } else {
-        // Trang ký tự mở rộng =\<
         rows = @[
             @[@"~",@"`",@"|",@"•",@"√",@"π",@"÷",@"×",@"§",@"△"],
             @[@"£",@"€",@"$",@"¢",@"^",@"°",@"=",@"{",@"}",@"\\"],
@@ -336,7 +343,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
         btn.isFunctional = YES;
         btn.backgroundColor = [self gboardFuncKeyColor];
         btn.layer.cornerRadius = ([token isEqualToString:@"?123"] || [token isEqualToString:@"ABC"]) ? 22.0 : 8.0;
-        btn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIImageSymbolWeightMedium];
+        btn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
         [btn setTitle:token forState:UIControlStateNormal];
         [btn setTitleColor:[UIColor colorWithWhite:0.92 alpha:1.0] forState:UIControlStateNormal];
         [btn addTarget:self action:@selector(onTapModeSwitch:) forControlEvents:UIControlEventTouchUpInside];
@@ -378,7 +385,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
         [btn addTarget:self action:@selector(onTapReturn) forControlEvents:UIControlEventTouchUpInside];
     }
     else {
-        // Phím ký tự thông thường
         btn.backgroundColor = [self gboardKeyColor];
         [btn setTitle:token forState:UIControlStateNormal];
         [btn setTitleColor:[UIColor colorWithWhite:0.95 alpha:1.0] forState:UIControlStateNormal];
@@ -428,7 +434,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
             }
         } else if (r == 1) {
             if (self.currentPage == JBKeyboardPageLetters) {
-                // Hàng ASDFGHJKL thụt lề 2 bên giống Gboard
                 CGFloat keyW = (w - sidePad * 2 - hGap * 9) / 10.0;
                 CGFloat rowTotalW = keyW * 9 + hGap * 8;
                 CGFloat startX = (w - rowTotalW) * 0.5;
@@ -442,7 +447,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
                 }
             }
         } else if (r == 2) {
-            // Hàng 3: Phím chức năng trái/phải rộng hơn
             CGFloat funcW = (w - sidePad * 2) * 0.135;
             NSInteger midCount = btns.count - 2;
             CGFloat midTotalW = w - sidePad * 2 - funcW * 2 - hGap * (midCount + 1);
@@ -456,14 +460,12 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
             }
             btns.lastObject.frame = CGRectMake(w - sidePad - funcW, y, funcW, rowH);
         } else if (r == 3) {
-            // Hàng đáy (Ảnh 1 & Ảnh 5)
             CGFloat returnW = 54.0;
             CGFloat modeW = 52.0;
             CGFloat smallW = 38.0;
             CGFloat dotW = 38.0;
             
             if (btns.count == 5) {
-                // ?123 | EMOJI | SPACE | . | RETURN
                 CGFloat spaceW = w - sidePad * 2 - modeW - smallW - dotW - returnW - hGap * 4;
                 CGFloat x = sidePad;
                 btns[0].frame = CGRectMake(x, y, modeW, rowH); x += modeW + hGap;
@@ -472,7 +474,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
                 btns[3].frame = CGRectMake(x, y, dotW, rowH); x += dotW + hGap;
                 btns[4].frame = CGRectMake(x, y, returnW, rowH);
             } else if (btns.count == 6) {
-                // ABC | , | 12/34 | SPACE | . | RETURN
                 CGFloat spaceW = w - sidePad * 2 - modeW - smallW * 2 - dotW - returnW - hGap * 5;
                 CGFloat x = sidePad;
                 btns[0].frame = CGRectMake(x, y, modeW, rowH); x += modeW + hGap;
@@ -486,7 +487,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     }
 }
 
-#pragma mark - Popup nhấn giữ chọn dấu tiếng Việt & số (Ảnh 6)
+#pragma mark - Popup nhấn giữ chọn dấu tiếng Việt & số
 
 - (void)onLongPressCharacterKey:(UILongPressGestureRecognizer *)gesture {
     JBKeyButton *btn = (JBKeyButton *)gesture.view;
@@ -561,7 +562,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
         [self.accentVariantButtons addObject:itemBtn];
     }
     
-    // Mặc định chọn ô gần ngón tay nhất (thường là số hoặc ký tự ở hàng dưới cùng)
     NSInteger defaultIdx = (rows - 1) * cols + MIN(cols - 1, 1);
     if (defaultIdx >= variants.count) defaultIdx = 0;
     [self highlightAccentIndex:defaultIdx];
@@ -696,7 +696,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     [self.delegate keyboardViewDidTapBackspace:self];
 }
 
-#pragma mark - Menu mở rộng 6 chức năng (Ảnh 2)
+#pragma mark - Menu mở rộng 6 chức năng
 
 - (void)onTapMenuGrid {
     if (self.overlayMode == JBOverlayModeFeatureGrid) {
@@ -754,7 +754,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
         [self.overlayContainerView addSubview:pill];
     }
     
-    // Nút cây bút chỉnh sửa ở góc dưới bên phải (Ảnh 2)
     UIButton *editPill = [UIButton buttonWithType:UIButtonTypeSystem];
     editPill.frame = CGRectMake(w - padX - 68, MAX(180, bodyH - 42), 68, 32);
     editPill.layer.cornerRadius = 16.0;
@@ -767,22 +766,22 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 
 - (void)onTapFeaturePill:(UIButton *)sender {
     switch (sender.tag) {
-        case 1: { // Chia sẻ Gboard
+        case 1: {
             [[UIPasteboard generalPasteboard] setString:@"JarBox Gboard Keyboard"];
             self.overlayMode = JBOverlayModeNone;
             break;
         }
-        case 2: { // Đổi kích thước
+        case 2: {
             [self onTapResizeMode];
             return;
         }
-        case 3: { // Nổi (Floating)
+        case 3: {
             self.isFloatingMode = !self.isFloatingMode;
             self.overlayMode = JBOverlayModeNone;
             [self.delegate keyboardView:self didToggleFloatingMode:self.isFloatingMode];
             break;
         }
-        case 4: { // Huỷ (Undo ký tự vừa nhập)
+        case 4: {
             if (self.undoHistory.count > 0) {
                 NSString *last = self.undoHistory.lastObject;
                 [self.undoHistory removeLastObject];
@@ -793,12 +792,12 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
             self.overlayMode = JBOverlayModeNone;
             break;
         }
-        case 5: { // Ngôn ngữ tiếp theo
+        case 5: {
             [self onTapToggleLanguage];
             self.overlayMode = JBOverlayModeNone;
             break;
         }
-        case 6: { // Tự động điền (Dán nhanh từ clipboard đầu tiên)
+        case 6: {
             JBClipboardItem *first = [JBClipboardManager sharedManager].pinnedItems.firstObject ?: [JBClipboardManager sharedManager].recentItems.firstObject;
             if (first.text.length > 0) {
                 [self commitTextToTarget:first.text];
@@ -815,7 +814,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     [self setNeedsLayout];
 }
 
-#pragma mark - Đổi kích thước bàn phím (Resize Mode)
+#pragma mark - Đổi kích thước bàn phím
 
 - (void)onTapResizeMode {
     self.overlayMode = JBOverlayModeResize;
@@ -839,7 +838,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     guide.numberOfLines = 2;
     [frameBox addSubview:guide];
     
-    // Nút tay cầm kéo chiều cao
     UIButton *dragHandle = [UIButton buttonWithType:UIButtonTypeSystem];
     dragHandle.frame = CGRectMake((frameBox.bounds.size.width - 44) * 0.5, -14, 44, 28);
     dragHandle.backgroundColor = [self gboardAccentBlueColor];
@@ -850,7 +848,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     [dragHandle addGestureRecognizer:pan];
     [frameBox addSubview:dragHandle];
     
-    // Nút xác nhận hoàn tất
     UIButton *doneBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     doneBtn.frame = CGRectMake((frameBox.bounds.size.width - 110) * 0.5, frameBox.bounds.size.height - 52, 110, 38);
     doneBtn.backgroundColor = [self gboardAccentBlueColor];
@@ -879,7 +876,10 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     [self setNeedsLayout];
 }
 
-#pragma mark - Bảng nhớ tạm (Clipboard - Ảnh 3)
+#pragma mark - Bảng nhớ tạm (Clipboard)
+
+static char kClipItemAssocKey;
+static char kDeletedItemAssocKey;
 
 - (void)onTapClipboard {
     [[JBClipboardManager sharedManager] syncWithSystemPasteboard];
@@ -896,7 +896,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     CGFloat h = self.bounds.size.height > 0 ? self.bounds.size.height : self.preferredKeyboardHeight;
     UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightMedium];
     
-    // Header: Nút Back <- | "Bảng nhớ tạm" | Công tắc gạt | Nút cây bút
     UIButton *backBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     backBtn.frame = CGRectMake(12, 10, 36, 36);
     backBtn.backgroundColor = [self gboardFuncKeyColor];
@@ -912,7 +911,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     titleLbl.font = [UIFont systemFontOfSize:19 weight:UIFontWeightMedium];
     [self.overlayContainerView addSubview:titleLbl];
     
-    // Nút bật/tắt bảng nhớ tạm
     UIButton *toggleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     toggleBtn.frame = CGRectMake(w - 94, 10, 36, 36);
     toggleBtn.backgroundColor = [self gboardFuncKeyColor];
@@ -922,7 +920,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     [toggleBtn addTarget:self action:@selector(onToggleClipboardEnabled) forControlEvents:UIControlEventTouchUpInside];
     [self.overlayContainerView addSubview:toggleBtn];
     
-    // Nút cây bút chỉnh sửa
     UIButton *editBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     editBtn.frame = CGRectMake(w - 48, 10, 36, 36);
     editBtn.backgroundColor = self.isClipboardEditMode ? [self gboardAccentBlueColor] : [self gboardFuncKeyColor];
@@ -961,7 +958,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     
     scroll.contentSize = CGSizeMake(w, curY + 64.0);
     
-    // Thanh Snackbar "Đã xoá 1 mục | Huỷ" (Ảnh 3)
     if (deletedItem) {
         CGFloat snackW = 240.0;
         CGFloat snackH = 44.0;
@@ -980,7 +976,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
         [undoBtn setTitle:@"Huỷ" forState:UIControlStateNormal];
         [undoBtn setTitleColor:[UIColor colorWithRed:0.05 green:0.35 blue:0.75 alpha:1.0] forState:UIControlStateNormal];
         undoBtn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
-        objc_setAssociatedObject(undoBtn, "deleted_item", deletedItem, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(undoBtn, &kDeletedItemAssocKey, deletedItem, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [undoBtn addTarget:self action:@selector(onUndoDeleteClipboardItem:) forControlEvents:UIControlEventTouchUpInside];
         [snack addSubview:undoBtn];
         
@@ -1009,7 +1005,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
         card.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         [card setTitle:item.text forState:UIControlStateNormal];
         [card setTitleColor:[UIColor colorWithWhite:0.94 alpha:1.0] forState:UIControlStateNormal];
-        objc_setAssociatedObject(card, "clip_item", item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(card, &kClipItemAssocKey, item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [card addTarget:self action:@selector(onTapClipboardCard:) forControlEvents:UIControlEventTouchUpInside];
         [scroll addSubview:card];
         
@@ -1018,7 +1014,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
             delBtn.frame = CGRectMake(cardW - 32, (cardH - 26) * 0.5, 26, 26);
             delBtn.tintColor = [UIColor colorWithRed:0.95 green:0.45 blue:0.45 alpha:1.0];
             [delBtn setImage:[UIImage systemImageNamed:@"trash.fill"] forState:UIControlStateNormal];
-            objc_setAssociatedObject(delBtn, "clip_item", item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(delBtn, &kClipItemAssocKey, item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             [delBtn addTarget:self action:@selector(onDeleteClipboardCard:) forControlEvents:UIControlEventTouchUpInside];
             [card addSubview:delBtn];
         }
@@ -1029,7 +1025,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 }
 
 - (void)onTapClipboardCard:(UIButton *)sender {
-    JBClipboardItem *item = objc_getAssociatedObject(sender, "clip_item");
+    JBClipboardItem *item = objc_getAssociatedObject(sender, &kClipItemAssocKey);
     if (!item) return;
     if (self.isClipboardEditMode) {
         [[JBClipboardManager sharedManager] togglePinForIdentifier:item.identifier];
@@ -1041,14 +1037,14 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 }
 
 - (void)onDeleteClipboardCard:(UIButton *)sender {
-    JBClipboardItem *item = objc_getAssociatedObject(sender, "clip_item");
+    JBClipboardItem *item = objc_getAssociatedObject(sender, &kClipItemAssocKey);
     if (!item) return;
     JBClipboardItem *removed = [[JBClipboardManager sharedManager] deleteItemWithIdentifier:item.identifier];
     [self buildClipboardOverlayWithUndoItem:removed];
 }
 
 - (void)onUndoDeleteClipboardItem:(UIButton *)sender {
-    JBClipboardItem *item = objc_getAssociatedObject(sender, "deleted_item");
+    JBClipboardItem *item = objc_getAssociatedObject(sender, &kDeletedItemAssocKey);
     if (item) {
         [[JBClipboardManager sharedManager] restoreDeletedItem:item atIndex:0];
         [self buildClipboardOverlayWithUndoItem:nil];
@@ -1071,7 +1067,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     [self setNeedsLayout];
 }
 
-#pragma mark - Hộp thoại Thay đổi bàn phím (Ảnh 4)
+#pragma mark - Hộp thoại Thay đổi bàn phím
 
 - (void)onLongPressSpace:(UILongPressGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateBegan) return;
@@ -1106,7 +1102,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     header.textAlignment = NSTextAlignmentCenter;
     [card addSubview:header];
     
-    // Option 1: Tiếng Việt (Việt Nam)
     UIButton *viBtn = [self createLangOptionButtonFrame:CGRectMake(16, 62, cardW - 32, 54)
                                                   title:@"Tiếng Việt (Việt Nam)"
                                                subtitle:@"QWERTY"
@@ -1115,7 +1110,6 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     [viBtn addTarget:self action:@selector(onSelectLanguageFromDialog:) forControlEvents:UIControlEventTouchUpInside];
     [card addSubview:viBtn];
     
-    // Option 2: English (US)
     UIButton *enBtn = [self createLangOptionButtonFrame:CGRectMake(16, 122, cardW - 32, 54)
                                                   title:@"English (US)"
                                                subtitle:@"QWERTY"
