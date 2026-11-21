@@ -7,7 +7,8 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol JBKeyboardViewDelegate <NSObject>
 - (void)keyboardView:(JBKeyboardView *)keyboardView didInsertText:(NSString *)text;
 - (void)keyboardViewDidTapBackspace:(JBKeyboardView *)keyboardView;
-- (void)keyboardViewDidTapReturn:(JBKeyboardView *)keyboardView;
+- (void)keyboardViewDidTapReturn:(JBKeyboardView *)keyboardView;     // Xuống dòng (\n)
+- (void)keyboardViewDidTapSubmit:(JBKeyboardView *)keyboardView;     // Gửi văn bản vào game JAR
 - (void)keyboardViewDidTapHide:(JBKeyboardView *)keyboardView;
 - (void)keyboardView:(JBKeyboardView *)keyboardView didChangeHeight:(CGFloat)newHeight;
 - (void)keyboardView:(JBKeyboardView *)keyboardView didToggleFloatingMode:(BOOL)isFloating;
@@ -19,6 +20,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, assign) CGFloat keyboardHeight;
 @property (nonatomic, assign) CGFloat preferredKeyboardHeight;
 @property (nonatomic, assign) BOOL isFloatingMode;
+@property (nonatomic, copy) NSString *currentText;
 
 - (void)reloadKeyboard;
 - (void)reloadKeyboardLayout;

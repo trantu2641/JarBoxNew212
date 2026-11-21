@@ -1,6 +1,7 @@
 #import "JBKeyboardView.h"
 #import "JBKeyboardIME.h"
 #import "JBClipboardManager.h"
+#import <AudioToolbox/AudioToolbox.h>
 #import <objc/runtime.h>
 
 typedef NS_ENUM(NSInteger, JBKeyboardPage) {
@@ -12,10 +13,8 @@ typedef NS_ENUM(NSInteger, JBKeyboardPage) {
 
 typedef NS_ENUM(NSInteger, JBOverlayMode) {
     JBOverlayModeNone = 0,
-    JBOverlayModeFeatureGrid = 1,
-    JBOverlayModeClipboard = 2,
-    JBOverlayModeResize = 3,
-    JBOverlayModeLanguagePicker = 4
+    JBOverlayModeClipboard = 1,
+    JBOverlayModeResize = 2
 };
 
 typedef NS_ENUM(NSInteger, JBShiftState) {
@@ -35,7 +34,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 @implementation JBKeyButton
 - (instancetype)initWithFrame:(CGRect)frame {
     if (self = [super initWithFrame:frame]) {
-        self.layer.cornerRadius = 8.0;
+        self.layer.cornerRadius = 7.0;
         self.layer.masksToBounds = YES;
         self.titleLabel.font = [UIFont systemFontOfSize:22 weight:UIFontWeightRegular];
         
@@ -50,7 +49,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    self.hintLabel.frame = CGRectMake(self.bounds.size.width - 15, 3, 11, 12);
+    self.hintLabel.frame = CGRectMake(self.bounds.size.width - 14, 2, 11, 12);
     self.hintLabel.hidden = (self.hintDigit.length == 0);
     self.hintLabel.text = self.hintDigit;
 }
@@ -59,12 +58,17 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 @interface JBKeyboardView ()
 @property (nonatomic, strong) JBKeyboardIME *ime;
 @property (nonatomic, strong) NSMutableString *wordBuffer;
-@property (nonatomic, strong) NSMutableArray<NSString *> *undoHistory;
+@property (nonatomic, strong) NSMutableString *fullTextBuffer;
 
 @property (nonatomic, assign) JBKeyboardPage currentPage;
 @property (nonatomic, assign) JBOverlayMode overlayMode;
 @property (nonatomic, assign) JBShiftState shiftState;
 @property (nonatomic, assign) BOOL isClipboardEditMode;
+
+// Khung văn bản 40px phía trên (hiện 2 dòng & cuộn được)
+@property (nonatomic, strong) UIView *textBoxContainer;
+@property (nonatomic, strong) UITextView *previewTextView;
+@property (nonatomic, strong) UIButton *clearTextBtn;
 
 @property (nonatomic, strong) UIView *toolbarView;
 @property (nonatomic, strong) UIView *keysContainerView;
@@ -75,13 +79,14 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 @property (nonatomic, strong) NSMutableArray<UIButton *> *accentVariantButtons;
 @property (nonatomic, assign) NSInteger selectedAccentIndex;
 
-@property (nonatomic, strong) UIButton *menuGridBtn;
+// Nút trên thanh toolbar (đã bỏ nút 4 ô vuông góc trái)
 @property (nonatomic, strong) UIButton *clipboardBtn;
 @property (nonatomic, strong) UIButton *translateBtn;
-@property (nonatomic, strong) UIButton *settingsBtn;
-@property (nonatomic, strong) UIButton *micOrHideBtn;
+@property (nonatomic, strong) UIButton *resizeBtn;
+@property (nonatomic, strong) UIButton *sendTextBtn;
 
 @property (nonatomic, strong) NSTimer *backspaceTimer;
+@property (nonatomic, strong) UIImpactFeedbackGenerator *hapticGenerator;
 @end
 
 @implementation JBKeyboardView
@@ -103,8 +108,12 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 - (UIColor *)gboardAccentDarkTextColor {
     return [UIColor colorWithRed:0.024 green:0.180 blue:0.435 alpha:1.0]; // #062E6F
 }
-- (UIColor *)gboardActiveMenuCircleColor {
-    return [UIColor colorWithRed:0.000 green:0.290 blue:0.467 alpha:1.0]; // #004A77
+
+#pragma mark - Âm thanh & Rung khi nhấn phím
+
+- (void)playKeyClickFeedback {
+    AudioServicesPlaySystemSound(1104);
+    [self.hapticGenerator impactOccurred];
 }
 
 #pragma mark - Init & Height Bridge
@@ -113,12 +122,14 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     if (self = [super initWithFrame:frame]) {
         _ime = [[JBKeyboardIME alloc] init];
         _wordBuffer = [NSMutableString string];
-        _undoHistory = [NSMutableArray array];
-        _keyboardHeight = 278.0;
-        _preferredKeyboardHeight = 278.0;
+        _fullTextBuffer = [NSMutableString string];
+        _keyboardHeight = 310.0; // Đã cộng thêm 40px khung văn bản phía trên
+        _preferredKeyboardHeight = 310.0;
         _currentPage = JBKeyboardPageLetters;
         _overlayMode = JBOverlayModeNone;
         _shiftState = JBShiftStateLowercase;
+        _hapticGenerator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        [_hapticGenerator prepare];
         
         self.backgroundColor = [self gboardBackgroundColor];
         [[JBClipboardManager sharedManager] syncWithSystemPasteboard];
@@ -128,6 +139,16 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
         [self rebuildKeyboardKeys];
     }
     return self;
+}
+
+- (NSString *)currentText {
+    return [self.fullTextBuffer copy];
+}
+
+- (void)setCurrentText:(NSString *)currentText {
+    [self.fullTextBuffer setString:(currentText ?: @"")];
+    [self.wordBuffer setString:@""];
+    [self syncPreviewTextView];
 }
 
 - (void)setKeyboardHeight:(CGFloat)keyboardHeight {
@@ -143,18 +164,68 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 }
 
 - (void)setupBaseContainers {
+    // 1. Khung văn bản phía trên cao 40px (hiển thị 2 dòng và cuộn được)
+    self.textBoxContainer = [[UIView alloc] init];
+    self.textBoxContainer.backgroundColor = [UIColor colorWithRed:0.14 green:0.145 blue:0.155 alpha:1.0];
+    [self addSubview:self.textBoxContainer];
+    
+    self.previewTextView = [[UITextView alloc] init];
+    self.previewTextView.backgroundColor = [self gboardKeyColor];
+    self.previewTextView.textColor = [UIColor whiteColor];
+    self.previewTextView.font = [UIFont systemFontOfSize:14.5 weight:UIFontWeightRegular];
+    self.previewTextView.layer.cornerRadius = 10.0;
+    self.previewTextView.layer.masksToBounds = YES;
+    self.previewTextView.editable = NO; // Nhập qua bàn phím Gboard bên dưới, cho phép cuộn tự do
+    self.previewTextView.selectable = YES;
+    self.previewTextView.scrollEnabled = YES;
+    self.previewTextView.showsVerticalScrollIndicator = YES;
+    self.previewTextView.textContainerInset = UIEdgeInsetsMake(3, 8, 3, 28);
+    self.previewTextView.textContainer.lineFragmentPadding = 0;
+    [self.textBoxContainer addSubview:self.previewTextView];
+    
+    self.clearTextBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.clearTextBtn.tintColor = [UIColor colorWithWhite:0.65 alpha:1.0];
+    UIImageSymbolConfiguration *clearCfg = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+    [self.clearTextBtn setImage:[UIImage systemImageNamed:@"xmark.circle.fill" withConfiguration:clearCfg] forState:UIControlStateNormal];
+    [self.clearTextBtn addTarget:self action:@selector(onTapClearTextBuffer) forControlEvents:UIControlEventTouchUpInside];
+    self.clearTextBtn.hidden = YES;
+    [self.textBoxContainer addSubview:self.clearTextBtn];
+    
+    // 2. Thanh công cụ
     self.toolbarView = [[UIView alloc] init];
     self.toolbarView.backgroundColor = [self gboardBackgroundColor];
     [self addSubview:self.toolbarView];
     
+    // 3. Khung phím bấm
     self.keysContainerView = [[UIView alloc] init];
     self.keysContainerView.backgroundColor = [self gboardBackgroundColor];
     [self addSubview:self.keysContainerView];
     
+    // 4. Overlay Clipboard / Chỉnh kích thước
     self.overlayContainerView = [[UIView alloc] init];
     self.overlayContainerView.backgroundColor = [self gboardBackgroundColor];
     self.overlayContainerView.hidden = YES;
     [self addSubview:self.overlayContainerView];
+}
+
+- (void)syncPreviewTextView {
+    self.previewTextView.text = self.fullTextBuffer;
+    self.clearTextBtn.hidden = (self.fullTextBuffer.length == 0);
+    if (self.fullTextBuffer.length > 0) {
+        NSRange bottom = NSMakeRange(self.fullTextBuffer.length - 1, 1);
+        [self.previewTextView scrollRangeToVisible:bottom];
+    }
+}
+
+- (void)onTapClearTextBuffer {
+    [self playKeyClickFeedback];
+    NSUInteger len = self.fullTextBuffer.length;
+    [self.fullTextBuffer setString:@""];
+    [self.wordBuffer setString:@""];
+    [self syncPreviewTextView];
+    for (NSUInteger i = 0; i < len; i++) {
+        [self.delegate keyboardViewDidTapBackspace:self];
+    }
 }
 
 - (void)layoutSubviews {
@@ -163,21 +234,27 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     CGFloat h = self.bounds.size.height;
     if (w <= 0 || h <= 0) return;
     
-    CGFloat toolbarH = 44.0;
+    CGFloat textBoxH = 40.0;
+    CGFloat toolbarH = 42.0;
+    
+    self.textBoxContainer.frame = CGRectMake(0, 0, w, textBoxH);
+    self.previewTextView.frame = CGRectMake(4, 3, w - 8, textBoxH - 6);
+    self.clearTextBtn.frame = CGRectMake(w - 32, 6, 26, 28);
+    
     if (self.overlayMode == JBOverlayModeClipboard) {
         self.toolbarView.hidden = YES;
         self.keysContainerView.hidden = YES;
         self.overlayContainerView.hidden = NO;
-        self.overlayContainerView.frame = self.bounds;
+        self.overlayContainerView.frame = CGRectMake(0, textBoxH, w, h - textBoxH);
     } else {
         self.toolbarView.hidden = NO;
-        self.toolbarView.frame = CGRectMake(0, 0, w, toolbarH);
+        self.toolbarView.frame = CGRectMake(0, textBoxH, w, toolbarH);
         
-        CGRect bodyFrame = CGRectMake(0, toolbarH, w, h - toolbarH);
+        CGRect bodyFrame = CGRectMake(0, textBoxH + toolbarH, w, h - textBoxH - toolbarH);
         self.keysContainerView.frame = bodyFrame;
         self.overlayContainerView.frame = bodyFrame;
         
-        BOOL showOverlayBody = (self.overlayMode == JBOverlayModeFeatureGrid || self.overlayMode == JBOverlayModeResize);
+        BOOL showOverlayBody = (self.overlayMode == JBOverlayModeResize);
         self.keysContainerView.hidden = showOverlayBody;
         self.overlayContainerView.hidden = !showOverlayBody;
     }
@@ -198,52 +275,49 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     [self setNeedsLayout];
 }
 
-#pragma mark - Toolbar
+#pragma mark - Toolbar (Bỏ nút ô vuông góc trái, thay nút hạ bằng nút Gửi)
 
 - (void)rebuildToolbar {
     [self.toolbarView.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
     
     UIImageSymbolConfiguration *iconCfg = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightMedium];
     
-    self.menuGridBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.menuGridBtn.layer.cornerRadius = 18.0;
-    if (self.overlayMode == JBOverlayModeFeatureGrid) {
-        self.menuGridBtn.backgroundColor = [self gboardActiveMenuCircleColor];
-        self.menuGridBtn.tintColor = [self gboardAccentBlueColor];
-        [self.menuGridBtn setImage:[UIImage systemImageNamed:@"xmark" withConfiguration:iconCfg] forState:UIControlStateNormal];
-    } else {
-        self.menuGridBtn.backgroundColor = [UIColor clearColor];
-        self.menuGridBtn.tintColor = [UIColor colorWithWhite:0.88 alpha:1.0];
-        [self.menuGridBtn setImage:[UIImage systemImageNamed:@"square.grid.2x2.fill" withConfiguration:iconCfg] forState:UIControlStateNormal];
-    }
-    [self.menuGridBtn addTarget:self action:@selector(onTapMenuGrid) forControlEvents:UIControlEventTouchUpInside];
-    [self.toolbarView addSubview:self.menuGridBtn];
-    
+    // 1. Nút Bảng nhớ tạm (Clipboard)
     self.clipboardBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.clipboardBtn.tintColor = [UIColor colorWithWhite:0.88 alpha:1.0];
     [self.clipboardBtn setImage:[UIImage systemImageNamed:@"list.clipboard" withConfiguration:iconCfg] forState:UIControlStateNormal];
     [self.clipboardBtn addTarget:self action:@selector(onTapClipboard) forControlEvents:UIControlEventTouchUpInside];
     [self.toolbarView addSubview:self.clipboardBtn];
     
+    // 2. Nút Chuyển đổi ngôn ngữ nhanh (Tiếng Việt / English)
     self.translateBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.translateBtn.tintColor = [UIColor colorWithWhite:0.88 alpha:1.0];
     [self.translateBtn setImage:[UIImage systemImageNamed:@"character.book.closed" withConfiguration:iconCfg] forState:UIControlStateNormal];
     [self.translateBtn addTarget:self action:@selector(onTapToggleLanguage) forControlEvents:UIControlEventTouchUpInside];
     [self.toolbarView addSubview:self.translateBtn];
     
-    self.settingsBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.settingsBtn.tintColor = [UIColor colorWithWhite:0.88 alpha:1.0];
-    [self.settingsBtn setImage:[UIImage systemImageNamed:@"gearshape.fill" withConfiguration:iconCfg] forState:UIControlStateNormal];
-    [self.settingsBtn addTarget:self action:@selector(onTapResizeMode) forControlEvents:UIControlEventTouchUpInside];
-    [self.toolbarView addSubview:self.settingsBtn];
+    // 3. Nút Cài đặt -> Chỉnh cao thấp bàn phím
+    self.resizeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.resizeBtn.layer.cornerRadius = 17.0;
+    if (self.overlayMode == JBOverlayModeResize) {
+        self.resizeBtn.backgroundColor = [self gboardAccentBlueColor];
+        self.resizeBtn.tintColor = [self gboardAccentDarkTextColor];
+    } else {
+        self.resizeBtn.backgroundColor = [UIColor clearColor];
+        self.resizeBtn.tintColor = [UIColor colorWithWhite:0.88 alpha:1.0];
+    }
+    [self.resizeBtn setImage:[UIImage systemImageNamed:@"gearshape.fill" withConfiguration:iconCfg] forState:UIControlStateNormal];
+    [self.resizeBtn addTarget:self action:@selector(onTapResizeMode) forControlEvents:UIControlEventTouchUpInside];
+    [self.toolbarView addSubview:self.resizeBtn];
     
-    self.micOrHideBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.micOrHideBtn.backgroundColor = [self gboardFuncKeyColor];
-    self.micOrHideBtn.tintColor = [UIColor colorWithWhite:0.92 alpha:1.0];
-    self.micOrHideBtn.layer.cornerRadius = 18.0;
-    [self.micOrHideBtn setImage:[UIImage systemImageNamed:@"keyboard.chevron.compact.down" withConfiguration:iconCfg] forState:UIControlStateNormal];
-    [self.micOrHideBtn addTarget:self action:@selector(onTapHideKeyboard) forControlEvents:UIControlEventTouchUpInside];
-    [self.toolbarView addSubview:self.micOrHideBtn];
+    // 4. Nút Gửi văn bản (thay cho nút hạ bàn phím ở góc phải)
+    self.sendTextBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.sendTextBtn.backgroundColor = [self gboardAccentBlueColor];
+    self.sendTextBtn.tintColor = [self gboardAccentDarkTextColor];
+    self.sendTextBtn.layer.cornerRadius = 17.0;
+    [self.sendTextBtn setImage:[UIImage systemImageNamed:@"paperplane.fill" withConfiguration:iconCfg] forState:UIControlStateNormal];
+    [self.sendTextBtn addTarget:self action:@selector(onTapSendText) forControlEvents:UIControlEventTouchUpInside];
+    [self.toolbarView addSubview:self.sendTextBtn];
 }
 
 - (void)layoutToolbarItems {
@@ -251,20 +325,22 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     CGFloat h = self.toolbarView.bounds.size.height;
     if (w <= 0) return;
     
-    CGFloat btnSize = 36.0;
+    CGFloat btnSize = 34.0;
     CGFloat y = (h - btnSize) * 0.5;
-    CGFloat margin = 12.0;
-    CGFloat usableW = w - margin * 2 - btnSize;
-    CGFloat step = usableW / 4.0;
+    CGFloat margin = 8.0;
     
-    self.menuGridBtn.frame = CGRectMake(margin, y, btnSize, btnSize);
-    self.clipboardBtn.frame = CGRectMake(margin + step, y, btnSize, btnSize);
-    self.translateBtn.frame = CGRectMake(margin + step * 2, y, btnSize, btnSize);
-    self.settingsBtn.frame = CGRectMake(margin + step * 3, y, btnSize, btnSize);
-    self.micOrHideBtn.frame = CGRectMake(w - margin - btnSize, y, btnSize, btnSize);
+    // Căn 3 nút chức năng bên trái + nút Gửi nổi bật bên phải
+    CGFloat leftAreaW = w - margin * 2 - 54.0;
+    CGFloat step = leftAreaW / 3.0;
+    
+    self.clipboardBtn.frame = CGRectMake(margin + step * 0.5 - btnSize * 0.5, y, btnSize, btnSize);
+    self.translateBtn.frame = CGRectMake(margin + step * 1.5 - btnSize * 0.5, y, btnSize, btnSize);
+    self.resizeBtn.frame    = CGRectMake(margin + step * 2.5 - btnSize * 0.5, y, btnSize, btnSize);
+    
+    self.sendTextBtn.frame  = CGRectMake(w - margin - 46.0, y, 46.0, btnSize);
 }
 
-#pragma mark - Xây dựng bàn phím
+#pragma mark - Xây dựng bàn phím (Tràn 2 mép màn hình + icon xuống dòng)
 
 - (void)rebuildKeyboardKeys {
     [self.keysContainerView.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
@@ -342,7 +418,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     else if ([token isEqualToString:@"?123"] || [token isEqualToString:@"ABC"] || [token isEqualToString:@"=\\<"]) {
         btn.isFunctional = YES;
         btn.backgroundColor = [self gboardFuncKeyColor];
-        btn.layer.cornerRadius = ([token isEqualToString:@"?123"] || [token isEqualToString:@"ABC"]) ? 22.0 : 8.0;
+        btn.layer.cornerRadius = ([token isEqualToString:@"?123"] || [token isEqualToString:@"ABC"]) ? 20.0 : 7.0;
         btn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
         [btn setTitle:token forState:UIControlStateNormal];
         [btn setTitleColor:[UIColor colorWithWhite:0.92 alpha:1.0] forState:UIControlStateNormal];
@@ -377,11 +453,12 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
         [btn addGestureRecognizer:lp];
     }
     else if ([token isEqualToString:@"RETURN"]) {
+        // Icon xuống dòng ↵ màu xanh #A8C7FA giống ảnh 2
         btn.isAccentAction = YES;
         btn.backgroundColor = [self gboardAccentBlueColor];
         btn.tintColor = [self gboardAccentDarkTextColor];
-        btn.layer.cornerRadius = 22.0;
-        [btn setImage:[UIImage systemImageNamed:@"magnifyingglass" withConfiguration:symCfg] forState:UIControlStateNormal];
+        btn.layer.cornerRadius = 20.0;
+        [btn setImage:[UIImage systemImageNamed:@"return.left" withConfiguration:symCfg] forState:UIControlStateNormal];
         [btn addTarget:self action:@selector(onTapReturn) forControlEvents:UIControlEventTouchUpInside];
     }
     else {
@@ -405,11 +482,12 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     CGFloat h = self.keysContainerView.bounds.size.height;
     if (w <= 0 || h <= 0) return;
     
-    CGFloat hGap = 5.0;
-    CGFloat vGap = 7.0;
-    CGFloat sidePad = 4.0;
-    CGFloat topPad = 4.0;
-    CGFloat bottomPad = 6.0;
+    // Sát 2 mép màn hình (sidePad = 2px)
+    CGFloat hGap = 4.0;
+    CGFloat vGap = 6.0;
+    CGFloat sidePad = 2.0;
+    CGFloat topPad = 3.0;
+    CGFloat bottomPad = 4.0;
     CGFloat rowH = (h - topPad - bottomPad - vGap * 3) / 4.0;
     
     NSMutableDictionary<NSNumber *, NSMutableArray<JBKeyButton *> *> *rowMap = [NSMutableDictionary dictionary];
@@ -494,6 +572,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     if (![btn isKindOfClass:[JBKeyButton class]]) return;
     
     if (gesture.state == UIGestureRecognizerStateBegan) {
+        [self playKeyClickFeedback];
         BOOL upper = (self.shiftState != JBShiftStateLowercase);
         NSArray<NSString *> *variants = [self.ime accentVariantsForKey:btn.primaryValue uppercase:upper];
         if (variants.count == 0) {
@@ -509,6 +588,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
         [self updateAccentSelectionAtPoint:pt];
     } else if (gesture.state == UIGestureRecognizerStateEnded) {
         if (self.selectedAccentIndex >= 0 && self.selectedAccentIndex < self.currentAccentVariants.count) {
+            [self playKeyClickFeedback];
             NSString *chosen = self.currentAccentVariants[self.selectedAccentIndex];
             [self commitTextToTarget:chosen];
             if (self.shiftState == JBShiftStateShifted) {
@@ -529,21 +609,21 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     
     NSInteger cols = MIN(4, variants.count);
     NSInteger rows = (NSInteger)ceil((double)variants.count / (double)cols);
-    CGFloat cellW = 44.0;
-    CGFloat cellH = 44.0;
-    CGFloat pad = 8.0;
+    CGFloat cellW = 42.0;
+    CGFloat cellH = 42.0;
+    CGFloat pad = 6.0;
     
     CGFloat popupW = cols * cellW + pad * 2;
     CGFloat popupH = rows * cellH + pad * 2;
     
     CGRect btnRectInSelf = [btn convertRect:btn.bounds toView:self];
     CGFloat popupX = CGRectGetMidX(btnRectInSelf) - popupW * 0.5;
-    popupX = MAX(6.0, MIN(self.bounds.size.width - popupW - 6.0, popupX));
-    CGFloat popupY = CGRectGetMinY(btnRectInSelf) - popupH - 4.0;
+    popupX = MAX(4.0, MIN(self.bounds.size.width - popupW - 4.0, popupX));
+    CGFloat popupY = MAX(2.0, CGRectGetMinY(btnRectInSelf) - popupH - 4.0);
     
     UIView *popup = [[UIView alloc] initWithFrame:CGRectMake(popupX, popupY, popupW, popupH)];
     popup.backgroundColor = [UIColor colorWithRed:0.20 green:0.21 blue:0.22 alpha:1.0];
-    popup.layer.cornerRadius = 18.0;
+    popup.layer.cornerRadius = 16.0;
     popup.layer.shadowColor = [UIColor blackColor].CGColor;
     popup.layer.shadowOpacity = 0.45;
     popup.layer.shadowRadius = 10.0;
@@ -574,7 +654,10 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     for (NSInteger i = 0; i < self.accentVariantButtons.count; i++) {
         CGRect hitFrame = CGRectInset(self.accentVariantButtons[i].frame, -4, -4);
         if (CGRectContainsPoint(hitFrame, pt)) {
-            [self highlightAccentIndex:i];
+            if (self.selectedAccentIndex != i) {
+                [self playKeyClickFeedback];
+                [self highlightAccentIndex:i];
+            }
             return;
         }
     }
@@ -601,17 +684,21 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     [self.accentVariantButtons removeAllObjects];
 }
 
-#pragma mark - Xử lý nhập liệu & Telex
+#pragma mark - Xử lý nhập liệu, Xuống dòng & Gửi văn bản
 
 - (void)onTapCharacterKey:(JBKeyButton *)sender {
     NSString *raw = sender.primaryValue;
     if (raw.length == 0) return;
+    [self playKeyClickFeedback];
     
     NSInteger deleteCount = 0;
     NSString *output = [self.ime processKey:raw withCurrentBuffer:self.wordBuffer deleteCount:&deleteCount];
     
     if (deleteCount > 0 && self.wordBuffer.length >= deleteCount) {
         [self.wordBuffer deleteCharactersInRange:NSMakeRange(self.wordBuffer.length - deleteCount, deleteCount)];
+        if (self.fullTextBuffer.length >= deleteCount) {
+            [self.fullTextBuffer deleteCharactersInRange:NSMakeRange(self.fullTextBuffer.length - deleteCount, deleteCount)];
+        }
         for (NSInteger i = 0; i < deleteCount; i++) {
             [self.delegate keyboardViewDidTapBackspace:self];
         }
@@ -627,25 +714,40 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 
 - (void)commitTextToTarget:(NSString *)text {
     if (text.length == 0) return;
-    if ([text isEqualToString:@" "] || [text isEqualToString:@"."] || [text isEqualToString:@","]) {
+    if ([text isEqualToString:@" "] || [text isEqualToString:@"\n"] || [text isEqualToString:@"."] || [text isEqualToString:@","]) {
         [self.wordBuffer setString:@""];
     } else {
         [self.wordBuffer appendString:text];
     }
-    [self.undoHistory addObject:text];
+    [self.fullTextBuffer appendString:text];
+    [self syncPreviewTextView];
     [self.delegate keyboardView:self didInsertText:text];
 }
 
 - (void)onTapSpace {
+    [self playKeyClickFeedback];
     [self commitTextToTarget:@" "];
 }
 
 - (void)onTapReturn {
-    [self.wordBuffer setString:@""];
+    // Phím xuống dòng: chèn \n vào khung văn bản 2 dòng và báo delegate
+    [self playKeyClickFeedback];
+    [self commitTextToTarget:@"\n"];
     [self.delegate keyboardViewDidTapReturn:self];
 }
 
+- (void)onTapSendText {
+    // Nút gửi văn bản trên thanh công cụ: gửi toàn bộ text và đóng bàn phím
+    [self playKeyClickFeedback];
+    if ([self.delegate respondsToSelector:@selector(keyboardViewDidTapSubmit:)]) {
+        [self.delegate keyboardViewDidTapSubmit:self];
+    } else {
+        [self.delegate keyboardViewDidTapHide:self];
+    }
+}
+
 - (void)onTapShift {
+    [self playKeyClickFeedback];
     if (self.shiftState == JBShiftStateLowercase) {
         self.shiftState = JBShiftStateShifted;
     } else if (self.shiftState == JBShiftStateShifted) {
@@ -657,6 +759,7 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 }
 
 - (void)onTapModeSwitch:(JBKeyButton *)sender {
+    [self playKeyClickFeedback];
     NSString *t = sender.primaryValue;
     if ([t isEqualToString:@"?123"]) {
         self.currentPage = JBKeyboardPageSymbols1;
@@ -669,11 +772,13 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 }
 
 - (void)onTapEmojiPage {
+    [self playKeyClickFeedback];
     self.currentPage = (self.currentPage == JBKeyboardPageEmoji) ? JBKeyboardPageLetters : JBKeyboardPageEmoji;
     [self rebuildKeyboardKeys];
 }
 
 - (void)onTapQuickNumpad {
+    [self playKeyClickFeedback];
     self.currentPage = JBKeyboardPageSymbols1;
     [self rebuildKeyboardKeys];
 }
@@ -690,154 +795,71 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
 }
 
 - (void)performSingleBackspace {
+    [self playKeyClickFeedback];
     if (self.wordBuffer.length > 0) {
         [self.wordBuffer deleteCharactersInRange:NSMakeRange(self.wordBuffer.length - 1, 1)];
+    }
+    if (self.fullTextBuffer.length > 0) {
+        [self.fullTextBuffer deleteCharactersInRange:NSMakeRange(self.fullTextBuffer.length - 1, 1)];
+        [self syncPreviewTextView];
     }
     [self.delegate keyboardViewDidTapBackspace:self];
 }
 
-#pragma mark - Menu mở rộng 6 chức năng
-
-- (void)onTapMenuGrid {
-    if (self.overlayMode == JBOverlayModeFeatureGrid) {
-        self.overlayMode = JBOverlayModeNone;
-    } else {
-        self.overlayMode = JBOverlayModeFeatureGrid;
-        [self buildFeatureGridOverlay];
-    }
-    [self rebuildToolbar];
-    [self setNeedsLayout];
-}
-
-- (void)buildFeatureGridOverlay {
-    [self.overlayContainerView.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
-    
-    NSArray<NSDictionary *> *items = @[
-        @{@"title": @"Chia sẻ Gboard", @"icon": @"point.3.connected.trianglepath.dotted", @"tag": @1},
-        @{@"title": @"Đổi kích thước", @"icon": @"viewfinder", @"tag": @2},
-        @{@"title": @"Nổi", @"icon": @"keyboard", @"tag": @3},
-        @{@"title": @"Huỷ", @"icon": @"arrow.uturn.left", @"tag": @4},
-        @{@"title": @"Ngôn ngữ tiếp theo", @"icon": @"globe", @"tag": @5},
-        @{@"title": @"Tự động điền", @"icon": @"rectangle.and.pencil.and.ellipsis", @"tag": @6}
-    ];
-    
-    CGFloat w = self.bounds.size.width > 0 ? self.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
-    CGFloat bodyH = self.preferredKeyboardHeight - 44.0;
-    CGFloat padX = 16.0;
-    CGFloat gapX = 12.0;
-    CGFloat gapY = 12.0;
-    CGFloat pillW = (w - padX * 2 - gapX) * 0.5;
-    CGFloat pillH = 48.0;
-    
-    UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightMedium];
-    
-    for (NSInteger i = 0; i < items.count; i++) {
-        NSInteger r = i / 2;
-        NSInteger c = i % 2;
-        NSDictionary *info = items[i];
-        
-        UIButton *pill = [UIButton buttonWithType:UIButtonTypeSystem];
-        pill.frame = CGRectMake(padX + c * (pillW + gapX), 12.0 + r * (pillH + gapY), pillW, pillH);
-        pill.backgroundColor = [self gboardFuncKeyColor];
-        pill.layer.cornerRadius = pillH * 0.5;
-        pill.tintColor = [UIColor colorWithWhite:0.93 alpha:1.0];
-        pill.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
-        pill.contentEdgeInsets = UIEdgeInsetsMake(0, 18, 0, 14);
-        pill.titleEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 0);
-        pill.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
-        pill.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-        pill.tag = [info[@"tag"] integerValue];
-        
-        [pill setImage:[UIImage systemImageNamed:info[@"icon"] withConfiguration:cfg] forState:UIControlStateNormal];
-        [pill setTitle:info[@"title"] forState:UIControlStateNormal];
-        [pill addTarget:self action:@selector(onTapFeaturePill:) forControlEvents:UIControlEventTouchUpInside];
-        [self.overlayContainerView addSubview:pill];
-    }
-    
-    UIButton *editPill = [UIButton buttonWithType:UIButtonTypeSystem];
-    editPill.frame = CGRectMake(w - padX - 68, MAX(180, bodyH - 42), 68, 32);
-    editPill.layer.cornerRadius = 16.0;
-    editPill.layer.borderWidth = 1.0;
-    editPill.layer.borderColor = [UIColor colorWithWhite:0.45 alpha:1.0].CGColor;
-    editPill.tintColor = [UIColor colorWithWhite:0.85 alpha:1.0];
-    [editPill setImage:[UIImage systemImageNamed:@"pencil" withConfiguration:cfg] forState:UIControlStateNormal];
-    [self.overlayContainerView addSubview:editPill];
-}
-
-- (void)onTapFeaturePill:(UIButton *)sender {
-    switch (sender.tag) {
-        case 1: {
-            [[UIPasteboard generalPasteboard] setString:@"JarBox Gboard Keyboard"];
-            self.overlayMode = JBOverlayModeNone;
-            break;
-        }
-        case 2: {
-            [self onTapResizeMode];
-            return;
-        }
-        case 3: {
-            self.isFloatingMode = !self.isFloatingMode;
-            self.overlayMode = JBOverlayModeNone;
-            [self.delegate keyboardView:self didToggleFloatingMode:self.isFloatingMode];
-            break;
-        }
-        case 4: {
-            if (self.undoHistory.count > 0) {
-                NSString *last = self.undoHistory.lastObject;
-                [self.undoHistory removeLastObject];
-                for (NSInteger i = 0; i < last.length; i++) {
-                    [self performSingleBackspace];
-                }
-            }
-            self.overlayMode = JBOverlayModeNone;
-            break;
-        }
-        case 5: {
-            [self onTapToggleLanguage];
-            self.overlayMode = JBOverlayModeNone;
-            break;
-        }
-        case 6: {
-            JBClipboardItem *first = [JBClipboardManager sharedManager].pinnedItems.firstObject ?: [JBClipboardManager sharedManager].recentItems.firstObject;
-            if (first.text.length > 0) {
-                [self commitTextToTarget:first.text];
-            }
-            self.overlayMode = JBOverlayModeNone;
-            break;
-        }
-        default:
-            self.overlayMode = JBOverlayModeNone;
-            break;
-    }
-    [self rebuildToolbar];
-    [self rebuildKeyboardKeys];
-    [self setNeedsLayout];
-}
-
-#pragma mark - Đổi kích thước bàn phím
+#pragma mark - Chỉnh cao thấp bàn phím (Từ nút bánh răng)
 
 - (void)onTapResizeMode {
+    [self playKeyClickFeedback];
+    if (self.overlayMode == JBOverlayModeResize) {
+        self.overlayMode = JBOverlayModeNone;
+        [self rebuildToolbar];
+        [self setNeedsLayout];
+        return;
+    }
+    
     self.overlayMode = JBOverlayModeResize;
     [self rebuildToolbar];
     [self.overlayContainerView.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
     
     CGFloat w = self.bounds.size.width > 0 ? self.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
-    CGFloat bodyH = self.preferredKeyboardHeight - 44.0;
+    CGFloat bodyH = MAX(160.0, self.preferredKeyboardHeight - 82.0);
     
-    UIView *frameBox = [[UIView alloc] initWithFrame:CGRectMake(12, 8, w - 24, bodyH - 16)];
+    UIView *frameBox = [[UIView alloc] initWithFrame:CGRectMake(8, 8, w - 16, bodyH - 16)];
     frameBox.layer.cornerRadius = 14.0;
     frameBox.layer.borderWidth = 2.0;
     frameBox.layer.borderColor = [self gboardAccentBlueColor].CGColor;
     [self.overlayContainerView addSubview:frameBox];
     
-    UILabel *guide = [[UILabel alloc] initWithFrame:CGRectMake(20, 20, frameBox.bounds.size.width - 40, 44)];
-    guide.text = @"Kéo tay cầm trên cùng để thay đổi chiều cao bàn phím";
-    guide.textColor = [UIColor colorWithWhite:0.85 alpha:1.0];
-    guide.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+    UILabel *guide = [[UILabel alloc] initWithFrame:CGRectMake(16, 16, frameBox.bounds.size.width - 32, 24)];
+    guide.text = [NSString stringWithFormat:@"Chiều cao bàn phím: %.0f px", self.preferredKeyboardHeight];
+    guide.textColor = [UIColor colorWithWhite:0.92 alpha:1.0];
+    guide.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
     guide.textAlignment = NSTextAlignmentCenter;
-    guide.numberOfLines = 2;
     [frameBox addSubview:guide];
     
+    // Nút giảm chiều cao (-)
+    UIButton *minusBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    minusBtn.frame = CGRectMake(frameBox.bounds.size.width * 0.5 - 95, 52, 80, 38);
+    minusBtn.backgroundColor = [self gboardFuncKeyColor];
+    minusBtn.layer.cornerRadius = 19.0;
+    [minusBtn setTitle:@"Thấp hơn -" forState:UIControlStateNormal];
+    [minusBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    minusBtn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    [minusBtn addTarget:self action:@selector(onDecreaseHeight) forControlEvents:UIControlEventTouchUpInside];
+    [frameBox addSubview:minusBtn];
+    
+    // Nút tăng chiều cao (+)
+    UIButton *plusBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    plusBtn.frame = CGRectMake(frameBox.bounds.size.width * 0.5 + 15, 52, 80, 38);
+    plusBtn.backgroundColor = [self gboardFuncKeyColor];
+    plusBtn.layer.cornerRadius = 19.0;
+    [plusBtn setTitle:@"Cao hơn +" forState:UIControlStateNormal];
+    [plusBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    plusBtn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    [plusBtn addTarget:self action:@selector(onIncreaseHeight) forControlEvents:UIControlEventTouchUpInside];
+    [frameBox addSubview:plusBtn];
+    
+    // Tay cầm kéo thả trực tiếp ở cạnh trên
     UIButton *dragHandle = [UIButton buttonWithType:UIButtonTypeSystem];
     dragHandle.frame = CGRectMake((frameBox.bounds.size.width - 44) * 0.5, -14, 44, 28);
     dragHandle.backgroundColor = [self gboardAccentBlueColor];
@@ -848,29 +870,51 @@ typedef NS_ENUM(NSInteger, JBShiftState) {
     [dragHandle addGestureRecognizer:pan];
     [frameBox addSubview:dragHandle];
     
+    // Nút Xong
     UIButton *doneBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    doneBtn.frame = CGRectMake((frameBox.bounds.size.width - 110) * 0.5, frameBox.bounds.size.height - 52, 110, 38);
+    doneBtn.frame = CGRectMake((frameBox.bounds.size.width - 104) * 0.5, frameBox.bounds.size.height - 46, 104, 36);
     doneBtn.backgroundColor = [self gboardAccentBlueColor];
-    doneBtn.layer.cornerRadius = 19.0;
+    doneBtn.layer.cornerRadius = 18.0;
     [doneBtn setTitle:@"Xong" forState:UIControlStateNormal];
     [doneBtn setTitleColor:[self gboardAccentDarkTextColor] forState:UIControlStateNormal];
-    doneBtn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    doneBtn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
     [doneBtn addTarget:self action:@selector(onFinishResize) forControlEvents:UIControlEventTouchUpInside];
     [frameBox addSubview:doneBtn];
     
     [self setNeedsLayout];
 }
 
-- (void)onPanResizeHandle:(UIPanGestureRecognizer *)pan {
-    CGPoint delta = [pan translationInView:self];
-    [pan setTranslation:CGPointZero inView:self];
-    CGFloat nextH = MAX(220.0, MIN(380.0, self.preferredKeyboardHeight - delta.y));
-    self.preferredKeyboardHeight = nextH;
-    [self.delegate keyboardView:self didChangeHeight:nextH];
+- (void)applyNewKeyboardHeight:(CGFloat)targetHeight {
+    [self playKeyClickFeedback];
+    CGFloat clamped = MAX(240.0, MIN(420.0, targetHeight));
+    self.preferredKeyboardHeight = clamped;
+    [self.delegate keyboardView:self didChangeHeight:clamped];
+    self.overlayMode = JBOverlayModeNone; // Trigger rebuild UI resize
     [self onTapResizeMode];
 }
 
+- (void)onDecreaseHeight {
+    [self applyNewKeyboardHeight:self.preferredKeyboardHeight - 22.0];
+}
+
+- (void)onIncreaseHeight {
+    [self applyNewKeyboardHeight:self.preferredKeyboardHeight + 22.0];
+}
+
+- (void)onPanResizeHandle:(UIPanGestureRecognizer *)pan {
+    CGPoint delta = [pan translationInView:self];
+    [pan setTranslation:CGPointZero inView:self];
+    CGFloat nextH = MAX(240.0, MIN(420.0, self.preferredKeyboardHeight - delta.y));
+    self.preferredKeyboardHeight = nextH;
+    [self.delegate keyboardView:self didChangeHeight:nextH];
+    if (pan.state == UIGestureRecognizerStateEnded) {
+        self.overlayMode = JBOverlayModeNone;
+        [self onTapResizeMode];
+    }
+}
+
 - (void)onFinishResize {
+    [self playKeyClickFeedback];
     self.overlayMode = JBOverlayModeNone;
     [self rebuildToolbar];
     [self setNeedsLayout];
@@ -882,6 +926,7 @@ static char kClipItemAssocKey;
 static char kDeletedItemAssocKey;
 
 - (void)onTapClipboard {
+    [self playKeyClickFeedback];
     [[JBClipboardManager sharedManager] syncWithSystemPasteboard];
     self.overlayMode = JBOverlayModeClipboard;
     self.isClipboardEditMode = NO;
@@ -893,43 +938,43 @@ static char kDeletedItemAssocKey;
     [self.overlayContainerView.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
     
     CGFloat w = self.bounds.size.width > 0 ? self.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
-    CGFloat h = self.bounds.size.height > 0 ? self.bounds.size.height : self.preferredKeyboardHeight;
+    CGFloat h = MAX(180.0, self.bounds.size.height - 40.0);
     UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightMedium];
     
     UIButton *backBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    backBtn.frame = CGRectMake(12, 10, 36, 36);
+    backBtn.frame = CGRectMake(10, 8, 34, 34);
     backBtn.backgroundColor = [self gboardFuncKeyColor];
     backBtn.tintColor = [UIColor whiteColor];
-    backBtn.layer.cornerRadius = 18.0;
+    backBtn.layer.cornerRadius = 17.0;
     [backBtn setImage:[UIImage systemImageNamed:@"arrow.left" withConfiguration:cfg] forState:UIControlStateNormal];
     [backBtn addTarget:self action:@selector(onCloseClipboard) forControlEvents:UIControlEventTouchUpInside];
     [self.overlayContainerView addSubview:backBtn];
     
-    UILabel *titleLbl = [[UILabel alloc] initWithFrame:CGRectMake(58, 10, 170, 36)];
+    UILabel *titleLbl = [[UILabel alloc] initWithFrame:CGRectMake(52, 8, 170, 34)];
     titleLbl.text = @"Bảng nhớ tạm";
     titleLbl.textColor = [UIColor colorWithWhite:0.95 alpha:1.0];
-    titleLbl.font = [UIFont systemFontOfSize:19 weight:UIFontWeightMedium];
+    titleLbl.font = [UIFont systemFontOfSize:18 weight:UIFontWeightMedium];
     [self.overlayContainerView addSubview:titleLbl];
     
     UIButton *toggleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    toggleBtn.frame = CGRectMake(w - 94, 10, 36, 36);
+    toggleBtn.frame = CGRectMake(w - 88, 8, 34, 34);
     toggleBtn.backgroundColor = [self gboardFuncKeyColor];
     toggleBtn.tintColor = [JBClipboardManager sharedManager].isEnabled ? [self gboardAccentBlueColor] : [UIColor grayColor];
-    toggleBtn.layer.cornerRadius = 18.0;
+    toggleBtn.layer.cornerRadius = 17.0;
     [toggleBtn setImage:[UIImage systemImageNamed:@"switch.2" withConfiguration:cfg] forState:UIControlStateNormal];
     [toggleBtn addTarget:self action:@selector(onToggleClipboardEnabled) forControlEvents:UIControlEventTouchUpInside];
     [self.overlayContainerView addSubview:toggleBtn];
     
     UIButton *editBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    editBtn.frame = CGRectMake(w - 48, 10, 36, 36);
+    editBtn.frame = CGRectMake(w - 44, 8, 34, 34);
     editBtn.backgroundColor = self.isClipboardEditMode ? [self gboardAccentBlueColor] : [self gboardFuncKeyColor];
     editBtn.tintColor = self.isClipboardEditMode ? [self gboardAccentDarkTextColor] : [UIColor whiteColor];
-    editBtn.layer.cornerRadius = 18.0;
+    editBtn.layer.cornerRadius = 17.0;
     [editBtn setImage:[UIImage systemImageNamed:@"pencil" withConfiguration:cfg] forState:UIControlStateNormal];
     [editBtn addTarget:self action:@selector(onToggleClipboardEdit) forControlEvents:UIControlEventTouchUpInside];
     [self.overlayContainerView addSubview:editBtn];
     
-    UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 54, w, h - 54)];
+    UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 48, w, h - 48)];
     [self.overlayContainerView addSubview:scroll];
     
     CGFloat curY = 4.0;
@@ -937,31 +982,31 @@ static char kDeletedItemAssocKey;
     NSArray<JBClipboardItem *> *recent = [JBClipboardManager sharedManager].recentItems;
     
     if (pinned.count > 0) {
-        UILabel *sec = [[UILabel alloc] initWithFrame:CGRectMake(14, curY, w - 28, 20)];
+        UILabel *sec = [[UILabel alloc] initWithFrame:CGRectMake(12, curY, w - 24, 20)];
         sec.text = @"Đã ghim";
         sec.textColor = [UIColor colorWithWhite:0.65 alpha:1.0];
         sec.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
         [scroll addSubview:sec];
-        curY += 26.0;
+        curY += 24.0;
         curY = [self layoutClipboardCards:pinned inScrollView:scroll startY:curY width:w];
     }
     
     if (recent.count > 0) {
-        UILabel *sec = [[UILabel alloc] initWithFrame:CGRectMake(14, curY + 4, w - 28, 20)];
+        UILabel *sec = [[UILabel alloc] initWithFrame:CGRectMake(12, curY + 4, w - 24, 20)];
         sec.text = @"Gần đây";
         sec.textColor = [UIColor colorWithWhite:0.65 alpha:1.0];
         sec.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
         [scroll addSubview:sec];
-        curY += 30.0;
+        curY += 28.0;
         curY = [self layoutClipboardCards:recent inScrollView:scroll startY:curY width:w];
     }
     
-    scroll.contentSize = CGSizeMake(w, curY + 64.0);
+    scroll.contentSize = CGSizeMake(w, curY + 60.0);
     
     if (deletedItem) {
         CGFloat snackW = 240.0;
-        CGFloat snackH = 44.0;
-        UIView *snack = [[UIView alloc] initWithFrame:CGRectMake((w - snackW) * 0.5, h - snackH - 14, snackW, snackH)];
+        CGFloat snackH = 42.0;
+        UIView *snack = [[UIView alloc] initWithFrame:CGRectMake((w - snackW) * 0.5, h - snackH - 12, snackW, snackH)];
         snack.backgroundColor = [UIColor colorWithRed:0.93 green:0.90 blue:0.96 alpha:1.0];
         snack.layer.cornerRadius = snackH * 0.5;
         
@@ -985,10 +1030,10 @@ static char kDeletedItemAssocKey;
 }
 
 - (CGFloat)layoutClipboardCards:(NSArray<JBClipboardItem *> *)list inScrollView:(UIScrollView *)scroll startY:(CGFloat)startY width:(CGFloat)w {
-    CGFloat pad = 12.0;
-    CGFloat gap = 10.0;
+    CGFloat pad = 10.0;
+    CGFloat gap = 8.0;
     CGFloat cardW = (w - pad * 2 - gap) * 0.5;
-    CGFloat cardH = 46.0;
+    CGFloat cardH = 44.0;
     
     for (NSInteger i = 0; i < list.count; i++) {
         JBClipboardItem *item = list[i];
@@ -1000,7 +1045,7 @@ static char kDeletedItemAssocKey;
         card.backgroundColor = [self gboardKeyColor];
         card.layer.cornerRadius = 12.0;
         card.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
-        card.contentEdgeInsets = UIEdgeInsetsMake(0, 14, 0, self.isClipboardEditMode ? 36 : 12);
+        card.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, self.isClipboardEditMode ? 34 : 10);
         card.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightRegular];
         card.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         [card setTitle:item.text forState:UIControlStateNormal];
@@ -1011,7 +1056,7 @@ static char kDeletedItemAssocKey;
         
         if (self.isClipboardEditMode) {
             UIButton *delBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-            delBtn.frame = CGRectMake(cardW - 32, (cardH - 26) * 0.5, 26, 26);
+            delBtn.frame = CGRectMake(cardW - 30, (cardH - 26) * 0.5, 26, 26);
             delBtn.tintColor = [UIColor colorWithRed:0.95 green:0.45 blue:0.45 alpha:1.0];
             [delBtn setImage:[UIImage systemImageNamed:@"trash.fill"] forState:UIControlStateNormal];
             objc_setAssociatedObject(delBtn, &kClipItemAssocKey, item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1025,6 +1070,7 @@ static char kDeletedItemAssocKey;
 }
 
 - (void)onTapClipboardCard:(UIButton *)sender {
+    [self playKeyClickFeedback];
     JBClipboardItem *item = objc_getAssociatedObject(sender, &kClipItemAssocKey);
     if (!item) return;
     if (self.isClipboardEditMode) {
@@ -1037,6 +1083,7 @@ static char kDeletedItemAssocKey;
 }
 
 - (void)onDeleteClipboardCard:(UIButton *)sender {
+    [self playKeyClickFeedback];
     JBClipboardItem *item = objc_getAssociatedObject(sender, &kClipItemAssocKey);
     if (!item) return;
     JBClipboardItem *removed = [[JBClipboardManager sharedManager] deleteItemWithIdentifier:item.identifier];
@@ -1044,6 +1091,7 @@ static char kDeletedItemAssocKey;
 }
 
 - (void)onUndoDeleteClipboardItem:(UIButton *)sender {
+    [self playKeyClickFeedback];
     JBClipboardItem *item = objc_getAssociatedObject(sender, &kDeletedItemAssocKey);
     if (item) {
         [[JBClipboardManager sharedManager] restoreDeletedItem:item atIndex:0];
@@ -1052,29 +1100,34 @@ static char kDeletedItemAssocKey;
 }
 
 - (void)onToggleClipboardEnabled {
+    [self playKeyClickFeedback];
     [JBClipboardManager sharedManager].isEnabled = ![JBClipboardManager sharedManager].isEnabled;
     [self buildClipboardOverlayWithUndoItem:nil];
 }
 
 - (void)onToggleClipboardEdit {
+    [self playKeyClickFeedback];
     self.isClipboardEditMode = !self.isClipboardEditMode;
     [self buildClipboardOverlayWithUndoItem:nil];
 }
 
 - (void)onCloseClipboard {
+    [self playKeyClickFeedback];
     self.overlayMode = JBOverlayModeNone;
     [self rebuildToolbar];
     [self setNeedsLayout];
 }
 
-#pragma mark - Hộp thoại Thay đổi bàn phím
+#pragma mark - Chuyển đổi ngôn ngữ
 
 - (void)onLongPressSpace:(UILongPressGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateBegan) return;
+    [self playKeyClickFeedback];
     [self showLanguagePickerDialog];
 }
 
 - (void)onTapToggleLanguage {
+    [self playKeyClickFeedback];
     self.ime.currentLanguage = (self.ime.currentLanguage == JBInputLanguageVietnamese) ? JBInputLanguageEnglish : JBInputLanguageVietnamese;
     [self rebuildKeyboardKeys];
 }
@@ -1088,21 +1141,21 @@ static char kDeletedItemAssocKey;
     UITapGestureRecognizer *dismissTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismissLanguageDialog:)];
     [dim addGestureRecognizer:dismissTap];
     
-    CGFloat cardW = MIN(310.0, targetHost.bounds.size.width - 48.0);
-    CGFloat cardH = 230.0;
+    CGFloat cardW = MIN(310.0, targetHost.bounds.size.width - 40.0);
+    CGFloat cardH = 220.0;
     UIView *card = [[UIView alloc] initWithFrame:CGRectMake((targetHost.bounds.size.width - cardW) * 0.5, (targetHost.bounds.size.height - cardH) * 0.5, cardW, cardH)];
     card.backgroundColor = [UIColor colorWithRed:0.17 green:0.16 blue:0.20 alpha:1.0];
-    card.layer.cornerRadius = 26.0;
+    card.layer.cornerRadius = 24.0;
     [dim addSubview:card];
     
-    UILabel *header = [[UILabel alloc] initWithFrame:CGRectMake(24, 20, cardW - 48, 30)];
+    UILabel *header = [[UILabel alloc] initWithFrame:CGRectMake(20, 18, cardW - 40, 28)];
     header.text = @"Thay đổi bàn phím";
     header.textColor = [UIColor whiteColor];
-    header.font = [UIFont systemFontOfSize:21 weight:UIFontWeightRegular];
+    header.font = [UIFont systemFontOfSize:20 weight:UIFontWeightRegular];
     header.textAlignment = NSTextAlignmentCenter;
     [card addSubview:header];
     
-    UIButton *viBtn = [self createLangOptionButtonFrame:CGRectMake(16, 62, cardW - 32, 54)
+    UIButton *viBtn = [self createLangOptionButtonFrame:CGRectMake(14, 58, cardW - 28, 52)
                                                   title:@"Tiếng Việt (Việt Nam)"
                                                subtitle:@"QWERTY"
                                                selected:(self.ime.currentLanguage == JBInputLanguageVietnamese)];
@@ -1110,20 +1163,13 @@ static char kDeletedItemAssocKey;
     [viBtn addTarget:self action:@selector(onSelectLanguageFromDialog:) forControlEvents:UIControlEventTouchUpInside];
     [card addSubview:viBtn];
     
-    UIButton *enBtn = [self createLangOptionButtonFrame:CGRectMake(16, 122, cardW - 32, 54)
+    UIButton *enBtn = [self createLangOptionButtonFrame:CGRectMake(14, 118, cardW - 28, 52)
                                                   title:@"English (US)"
                                                subtitle:@"QWERTY"
                                                selected:(self.ime.currentLanguage == JBInputLanguageEnglish)];
     enBtn.tag = JBInputLanguageEnglish;
     [enBtn addTarget:self action:@selector(onSelectLanguageFromDialog:) forControlEvents:UIControlEventTouchUpInside];
     [card addSubview:enBtn];
-    
-    UILabel *footer = [[UILabel alloc] initWithFrame:CGRectMake(24, 186, cardW - 48, 24)];
-    footer.text = @"Cài đặt ngôn ngữ";
-    footer.textColor = [self gboardAccentBlueColor];
-    footer.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
-    footer.textAlignment = NSTextAlignmentRight;
-    [card addSubview:footer];
     
     [targetHost addSubview:dim];
 }
@@ -1136,19 +1182,19 @@ static char kDeletedItemAssocKey;
     
     UIColor *fg = selected ? [self gboardAccentDarkTextColor] : [UIColor colorWithWhite:0.92 alpha:1.0];
     if (selected) {
-        UIImageView *check = [[UIImageView alloc] initWithFrame:CGRectMake(18, 17, 20, 20)];
+        UIImageView *check = [[UIImageView alloc] initWithFrame:CGRectMake(18, 16, 20, 20)];
         check.image = [UIImage systemImageNamed:@"checkmark"];
         check.tintColor = fg;
         [btn addSubview:check];
     }
     
-    UILabel *tLbl = [[UILabel alloc] initWithFrame:CGRectMake(52, 8, frame.size.width - 64, 20)];
+    UILabel *tLbl = [[UILabel alloc] initWithFrame:CGRectMake(50, 7, frame.size.width - 60, 20)];
     tLbl.text = title;
     tLbl.textColor = fg;
     tLbl.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
     [btn addSubview:tLbl];
     
-    UILabel *sLbl = [[UILabel alloc] initWithFrame:CGRectMake(52, 29, frame.size.width - 64, 16)];
+    UILabel *sLbl = [[UILabel alloc] initWithFrame:CGRectMake(50, 28, frame.size.width - 60, 16)];
     sLbl.text = sub;
     sLbl.textColor = selected ? fg : [UIColor colorWithWhite:0.65 alpha:1.0];
     sLbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
@@ -1158,6 +1204,7 @@ static char kDeletedItemAssocKey;
 }
 
 - (void)onSelectLanguageFromDialog:(UIButton *)sender {
+    [self playKeyClickFeedback];
     self.ime.currentLanguage = (JBInputLanguage)sender.tag;
     UIView *targetHost = self.superview ?: self;
     [[targetHost viewWithTag:998877] removeFromSuperview];
@@ -1177,25 +1224,25 @@ static char kDeletedItemAssocKey;
         @"👍",@"👎",@"👌",@"✌️",@"❤️",@"💔",@"🔥",@"✨"
     ];
     CGFloat w = self.keysContainerView.bounds.size.width > 0 ? self.keysContainerView.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
-    CGFloat h = self.keysContainerView.bounds.size.height > 0 ? self.keysContainerView.bounds.size.height : 230.0;
+    CGFloat h = self.keysContainerView.bounds.size.height > 0 ? self.keysContainerView.bounds.size.height : 220.0;
     
     CGFloat cellW = w / 8.0;
-    CGFloat cellH = (h - 46.0) / 3.0;
+    CGFloat cellH = (h - 44.0) / 3.0;
     for (NSInteger i = 0; i < emojis.count; i++) {
         NSInteger r = i / 8;
         NSInteger c = i % 8;
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
         b.frame = CGRectMake(c * cellW, r * cellH, cellW, cellH);
-        b.titleLabel.font = [UIFont systemFontOfSize:26];
+        b.titleLabel.font = [UIFont systemFontOfSize:25];
         [b setTitle:emojis[i] forState:UIControlStateNormal];
         [b addTarget:self action:@selector(onTapEmojiChar:) forControlEvents:UIControlEventTouchUpInside];
         [self.keysContainerView addSubview:b];
     }
     
     UIButton *abcBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    abcBtn.frame = CGRectMake(8, h - 42, 64, 36);
+    abcBtn.frame = CGRectMake(6, h - 40, 62, 34);
     abcBtn.backgroundColor = [self gboardFuncKeyColor];
-    abcBtn.layer.cornerRadius = 18.0;
+    abcBtn.layer.cornerRadius = 17.0;
     [abcBtn setTitle:@"ABC" forState:UIControlStateNormal];
     [abcBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     [abcBtn addTarget:self action:@selector(onTapEmojiPage) forControlEvents:UIControlEventTouchUpInside];
@@ -1203,12 +1250,10 @@ static char kDeletedItemAssocKey;
 }
 
 - (void)onTapEmojiChar:(UIButton *)sender {
+    [self playKeyClickFeedback];
     NSString *e = [sender titleForState:UIControlStateNormal];
     if (e.length > 0) [self commitTextToTarget:e];
 }
 
-- (void)onTapHideKeyboard {
-    [self.delegate keyboardViewDidTapHide:self];
-}
-
 @end
+
