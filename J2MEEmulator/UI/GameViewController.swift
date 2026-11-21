@@ -1749,7 +1749,17 @@ final class GameViewController: UIViewController {
         textBoxOverlay.configure(title: title, initialText: initialText, maxSize: maxSize, constraints: constraints)
         textBoxOverlay.isHidden = false
         view.bringSubviewToFront(textBoxOverlay)
-        textBoxOverlay.focusInput()
+        focusFirstTextInput(in: textBoxOverlay)
+    }
+
+    private func focusFirstTextInput(in root: UIView) {
+        if root is UITextField || root is UITextView {
+            root.becomeFirstResponder()
+            return
+        }
+        for subview in root.subviews {
+            focusFirstTextInput(in: subview)
+        }
     }
 
     // MARK: - iOS software keyboard
