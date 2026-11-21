@@ -36,7 +36,7 @@ final class J2MEQWERTYKeyboardView: UIView {
         attached = true
 
         manager.hostViewController = nearestViewController()
-        manager.attachToView(self)
+        manager.attach(to: self)
         manager.setKeyboardHeight(clampedKeyboardHeight(), animated: false)
         manager.hide()
     }
