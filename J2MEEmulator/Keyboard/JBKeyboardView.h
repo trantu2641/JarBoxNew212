@@ -16,9 +16,11 @@ NS_ASSUME_NONNULL_BEGIN
 @interface JBKeyboardView : UIView
 
 @property (nonatomic, weak, nullable) id<JBKeyboardViewDelegate> delegate;
+@property (nonatomic, assign) CGFloat keyboardHeight;
 @property (nonatomic, assign) CGFloat preferredKeyboardHeight;
 @property (nonatomic, assign) BOOL isFloatingMode;
 
+- (void)reloadKeyboard;
 - (void)reloadKeyboardLayout;
 
 @end
