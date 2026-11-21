@@ -2,10 +2,7 @@
 // J2MEQWERTYKeyboardView.swift
 // JarBox Gboard-style keyboard adapter.
 //
-// One keyboard manager is owned by this view. This is important because
-// JarBox can have multiple JAR sessions/tabs and a global singleton would
-// mix text/callbacks between sessions.
-//
+
 import UIKit
 
 final class J2MEQWERTYKeyboardView: UIView {
@@ -71,10 +68,12 @@ final class J2MEQWERTYKeyboardView: UIView {
         manager.keyboardView.reloadKeyboard()
     }
 
+    // Internal dismiss only. Do not call onCancel here because
+    // GameViewController.finishQWERTYInput() is already the owner of the
+    // confirm/cancel callback and would otherwise recurse.
     func dismissKeyboard() {
         manager.hide()
         isHidden = true
-        onCancel?()
     }
 
     private func clampedKeyboardHeight() -> CGFloat {
@@ -86,7 +85,7 @@ final class J2MEQWERTYKeyboardView: UIView {
             self?.text ?? ""
         }
 
-        manager.insertTextHandler = { [weak self] value in
+        manager.insertTextHandler = { [weak self] (value: String) in
             guard let self else { return }
             self.text.append(contentsOf: value)
         }
@@ -107,7 +106,9 @@ final class J2MEQWERTYKeyboardView: UIView {
     private func nearestViewController() -> UIViewController? {
         var responder: UIResponder? = self
         while let current = responder {
-            if let controller = current as? UIViewController { return controller }
+            if let controller = current as? UIViewController {
+                return controller
+            }
             responder = current.next
         }
         return nil

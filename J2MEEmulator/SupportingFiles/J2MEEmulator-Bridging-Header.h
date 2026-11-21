@@ -6,6 +6,7 @@
 #include "NativeBridge/j2me_input.h"
 #include "NativeBridge/j2me_ui.h"
 #include "NativeBridge/j2me_audio.h"
+#import "Keyboard/JBKeyboardManager.h"
 
 // Getters for Form/List/Alert data built by j2me_ui.m
 const char *j2me_ui_get_form_title(void);
@@ -20,7 +21,6 @@ int j2me_ui_has_pending_form_item_text(int index);
 const char *j2me_ui_get_pending_form_item_text(int index);
 void j2me_ui_set_form_item_selected(int index, int selected);
 int j2me_ui_has_pending_form_item_selected(int index);
-int j2me_ui_get_pending_form_item_selected(int index);
 void j2me_ui_clear_pending_form_edits(void);
 int j2me_ui_get_command_count(void);
 const char *j2me_ui_get_command_label(int index);
